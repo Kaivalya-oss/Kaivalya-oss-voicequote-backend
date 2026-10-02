@@ -8,8 +8,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
 COPY requirements.txt .
-RUN pip install --no-cache-dir --user -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 
 # Production Stage
@@ -23,17 +26,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy python dependencies from builder
-COPY --from=builder /root/.local /root/.local
-ENV PATH=/root/.local/bin:$PATH
-
-# Copy backend application source
-COPY . .
-
-# Create non-root user and ensure storage directories exist
+# Create non-root user and ensure storage directories exist FIRST
 RUN mkdir -p uploads generated_pdfs && \
     useradd -u 1000 appuser && \
     chown -R appuser:appuser /app
+
+# Copy virtual environment from builder with proper ownership
+COPY --chown=appuser:appuser --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Copy backend application source with proper ownership
+COPY --chown=appuser:appuser . .
 
 USER appuser
 
