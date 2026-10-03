@@ -62,6 +62,10 @@ class Settings(BaseSettings):
     # Gemini AI
     GEMINI_API_KEY: str = ""
 
+    # Google Sheets Integration
+    GOOGLE_SHEETS_SPREADSHEET_ID: str = ""
+    GOOGLE_SERVICE_ACCOUNT_FILE: str = ""
+
     # Storage Paths
     UPLOAD_DIR: str = "uploads"
     PDF_STORAGE_DIR: str = "generated_pdfs"
