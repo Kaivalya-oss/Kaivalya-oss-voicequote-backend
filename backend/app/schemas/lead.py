@@ -48,6 +48,12 @@ class LeadUpdate(BaseModel):
 class LeadStatusTransitionRequest(BaseModel):
     to_status: str = Field(..., pattern=r"^(NEW|CONTACTED|INTERESTED|TEST_RIDE|NEGOTIATION|BOOKED|PURCHASED|LOST)$")
     reason: Optional[str] = Field(None, description="Reason for status change or loss explanation")
+    from_status: Optional[str] = Field(
+        None,
+        pattern=r"^(NEW|CONTACTED|INTERESTED|TEST_RIDE|NEGOTIATION|BOOKED|PURCHASED|LOST)$",
+        description="Status the client believes the lead is in. If the lead has moved on, the request is "
+        "rejected with 409 LEAD_STATE_CHANGED instead of being applied to a state the user never saw.",
+    )
 
 
 class LeadResponse(LeadBase):

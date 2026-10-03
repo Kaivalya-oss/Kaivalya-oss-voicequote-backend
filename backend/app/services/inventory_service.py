@@ -1,12 +1,27 @@
-from typing import List, Optional, Tuple
+from datetime import datetime, timezone
+from typing import Dict, List, Optional, Set, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import BadRequestException, ConflictException, NotFoundException
 from app.models.inventory import InventoryUnit
+from app.models.user import User
+from app.services.access_policy import ensure_can_release_unit
 from app.repositories.inventory_repository import InventoryRepository
 from app.repositories.vehicle_repository import VehicleRepository
 from app.repositories.audit_log_repository import AuditLogRepository
 from app.schemas.inventory import InventoryUnitCreate, InventoryUnitUpdate, VariantStockSummary
+
+
+# Status changes allowed through PUT /inventory/{id}. Reservation is deliberately absent:
+# AVAILABLE -> RESERVED only via reserve_unit and RESERVED -> AVAILABLE only via release_unit,
+# both of which take a row lock. SOLD is terminal.
+INVENTORY_STATUS_TRANSITIONS: Dict[str, Set[str]] = {
+    "AVAILABLE": {"SOLD", "SERVICE", "IN_TRANSIT"},
+    "RESERVED": {"SOLD"},
+    "IN_TRANSIT": {"AVAILABLE", "SERVICE"},
+    "SERVICE": {"AVAILABLE", "IN_TRANSIT"},
+    "SOLD": set(),
+}
 
 
 class InventoryService:
@@ -27,11 +42,11 @@ class InventoryService:
             raise NotFoundException("VehicleVariant", req.variant_id)
 
         # Check VIN duplicate
-        if await self.inv_repo.get_by_vin(req.vin_chassis_number):
+        if await self.inv_repo.get_by_vin(req.vin_chassis_number.strip().upper()):
             raise ConflictException("VIN_EXISTS", f"Inventory unit with VIN '{req.vin_chassis_number}' already exists.")
 
         # Check Engine duplicate
-        if await self.inv_repo.get_by_engine(req.engine_number):
+        if await self.inv_repo.get_by_engine(req.engine_number.strip().upper()):
             raise ConflictException("ENGINE_NO_EXISTS", f"Inventory unit with engine number '{req.engine_number}' already exists.")
 
         unit = InventoryUnit(
@@ -39,7 +54,7 @@ class InventoryService:
             vin_chassis_number=req.vin_chassis_number.strip().upper(),
             engine_number=req.engine_number.strip().upper(),
             color=req.color.strip(),
-            status=req.status.upper().strip(),
+            status=req.status,
             branch_name=req.branch_name.strip(),
             arrival_date=req.arrival_date,
             notes=req.notes,
@@ -105,6 +120,8 @@ class InventoryService:
 
         old_status = unit.status
         unit.status = "RESERVED"
+        unit.reserved_by_user_id = user_id
+        unit.reserved_at = datetime.now(timezone.utc)
         if notes:
             unit.notes = f"{unit.notes}\n[Reservation]: {notes}" if unit.notes else f"[Reservation]: {notes}"
 
@@ -127,11 +144,14 @@ class InventoryService:
         notes: Optional[str] = None,
         user_id: Optional[int] = None,
         ip_address: Optional[str] = None,
+        actor: Optional[User] = None,
     ) -> InventoryUnit:
         # Atomic lock
         unit = await self.inv_repo.get_by_id_for_update(unit_id)
         if not unit:
             raise NotFoundException("InventoryUnit", unit_id)
+        if actor is not None and unit.status == "RESERVED":
+            ensure_can_release_unit(actor, unit)
 
         if unit.status != "RESERVED":
             raise BadRequestException(
@@ -141,6 +161,8 @@ class InventoryService:
 
         old_status = unit.status
         unit.status = "AVAILABLE"
+        unit.reserved_by_user_id = None
+        unit.reserved_at = None
         if notes:
             unit.notes = f"{unit.notes}\n[Released]: {notes}" if unit.notes else f"[Released]: {notes}"
 
@@ -172,8 +194,25 @@ class InventoryService:
 
         if req.color is not None:
             unit.color = req.color.strip()
-        if req.status is not None:
-            unit.status = req.status.upper().strip()
+        if req.status is not None and req.status != unit.status:
+            allowed = INVENTORY_STATUS_TRANSITIONS.get(unit.status, set())
+            if req.status not in allowed:
+                hint = ""
+                if req.status == "RESERVED":
+                    hint = " Use the reserve action to reserve a unit."
+                elif unit.status == "RESERVED" and req.status == "AVAILABLE":
+                    hint = " Use the release action to free a reservation."
+                raise BadRequestException(
+                    code="INVALID_INVENTORY_TRANSITION",
+                    message=(
+                        f"Cannot change unit #{unit_id} from '{unit.status}' to '{req.status}'. "
+                        f"Allowed: {sorted(allowed) or 'none (terminal state)'}.{hint}"
+                    ),
+                )
+            unit.status = req.status
+            if req.status == "SOLD":
+                unit.reserved_by_user_id = None
+                unit.reserved_at = None
         if req.branch_name is not None:
             unit.branch_name = req.branch_name.strip()
         if req.arrival_date is not None:

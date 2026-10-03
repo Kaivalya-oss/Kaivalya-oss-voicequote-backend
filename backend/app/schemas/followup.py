@@ -1,6 +1,13 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+def _assume_utc(v: Optional[datetime]) -> Optional[datetime]:
+    """Treat timezone-less datetimes as UTC so comparisons never mix naive and aware values."""
+    if isinstance(v, datetime) and v.tzinfo is None:
+        return v.replace(tzinfo=timezone.utc)
+    return v
 
 from app.schemas.auth import UserResponse
 
@@ -19,12 +26,21 @@ class FollowupCreate(BaseModel):
     type: str = Field(default="CALL", pattern=r"^(CALL|VISIT|WHATSAPP|EMAIL)$")
     notes: Optional[str] = None
 
+    _utc = field_validator("scheduled_at")(_assume_utc)
+
 
 class FollowupUpdate(BaseModel):
     scheduled_at: Optional[datetime] = None
     type: Optional[str] = Field(None, pattern=r"^(CALL|VISIT|WHATSAPP|EMAIL)$")
     notes: Optional[str] = None
+    # Accepted only for backwards compatibility; changing status here is rejected (use /complete or /cancel).
     status: Optional[str] = Field(None, pattern=r"^(SCHEDULED|COMPLETED|CANCELLED)$")
+
+    _utc = field_validator("scheduled_at")(_assume_utc)
+
+
+class FollowupCancelRequest(BaseModel):
+    reason: Optional[str] = Field(None, description="Why the follow-up is no longer needed")
 
 
 class FollowupCompleteRequest(BaseModel):

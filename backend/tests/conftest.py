@@ -16,6 +16,14 @@ from app.main import app
 from app.models.user import User
 from app.repositories.user_repository import UserRepository
 
+# Never run the suite against the application database: tests create and modify records.
+if settings.TEST_DATABASE_URL.rstrip("/") == settings.DATABASE_URL.rstrip("/"):
+    pytest.exit(
+        "TEST_DATABASE_URL points at the application database (DATABASE_URL). "
+        "Point it at a dedicated test database before running tests.",
+        returncode=2,
+    )
+
 # Test database engine with NullPool to prevent connection leakage between tests
 test_engine = create_async_engine(settings.TEST_DATABASE_URL, echo=False, poolclass=pool.NullPool)
 TestingAsyncSessionLocal = async_sessionmaker(

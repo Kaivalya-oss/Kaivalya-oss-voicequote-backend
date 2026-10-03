@@ -44,6 +44,21 @@ class QuotationRepository(BaseRepository[Quotation]):
         result = await self.session.execute(stmt)
         return result.scalars().first()
 
+    async def get_by_idempotency_key(self, key: str) -> Optional[Quotation]:
+        stmt = (
+            select(Quotation)
+            .where(Quotation.idempotency_key == key)
+            .options(
+                selectinload(Quotation.customer),
+                selectinload(Quotation.sales_executive),
+                selectinload(Quotation.variant).selectinload(VehicleVariant.model).selectinload(VehicleModel.brand),
+                selectinload(Quotation.offer),
+                selectinload(Quotation.items),
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().first()
+
     async def generate_unique_quotation_number(self) -> str:
         date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
         for _ in range(20):

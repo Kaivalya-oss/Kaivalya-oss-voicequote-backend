@@ -15,6 +15,7 @@ from app.schemas.test_ride import (
     TestRideCreate,
     TestRideResponse,
 )
+from app.services.access_policy import ensure_can_view_owned, is_scoped_reader
 from app.services.test_ride_service import TestRideService
 
 router = APIRouter(prefix="/test-rides", tags=["Test Rides"])
@@ -62,7 +63,7 @@ async def list_test_rides(
     rides, total = await service.list_test_rides(
         customer_id=customer_id,
         variant_id=variant_id,
-        sales_executive_id=sales_executive_id,
+        sales_executive_id=current_user.id if is_scoped_reader(current_user) else sales_executive_id,
         status=status,
         from_date=from_date,
         to_date=to_date,
@@ -91,6 +92,7 @@ async def get_test_ride(
 ):
     service = TestRideService(db)
     ride = await service.get_test_ride(id)
+    ensure_can_view_owned(current_user, ride.sales_executive_id, "TestRide", ride.id)
     return SuccessResponse(data=TestRideResponse.model_validate(ride))
 
 

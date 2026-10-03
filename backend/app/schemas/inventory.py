@@ -1,5 +1,5 @@
 from datetime import date, datetime
-from typing import Optional
+from typing import Literal, Optional
 from pydantic import BaseModel, Field
 from app.schemas.vehicle import VariantResponse
 
@@ -16,13 +16,20 @@ class InventoryUnitBase(BaseModel):
     notes: Optional[str] = None
 
 
+# Closed set of physical-unit states (mirrors ck_inventory_units_status).
+InventoryStatus = Literal["AVAILABLE", "RESERVED", "SOLD", "SERVICE", "IN_TRANSIT"]
+# A new unit can only enter stock in these states; RESERVED/SOLD are reached through the workflow.
+InitialInventoryStatus = Literal["AVAILABLE", "IN_TRANSIT", "SERVICE"]
+
+
 class InventoryUnitCreate(InventoryUnitBase):
-    pass
+    status: InitialInventoryStatus = Field(default="AVAILABLE", example="AVAILABLE")
 
 
 class InventoryUnitUpdate(BaseModel):
     color: Optional[str] = None
-    status: Optional[str] = None
+    # Validated against INVENTORY_STATUS_TRANSITIONS; RESERVED is only reachable via /reserve and /release.
+    status: Optional[InventoryStatus] = None
     branch_name: Optional[str] = None
     arrival_date: Optional[date] = None
     notes: Optional[str] = None
@@ -30,6 +37,8 @@ class InventoryUnitUpdate(BaseModel):
 
 class InventoryUnitResponse(InventoryUnitBase):
     id: int
+    reserved_by_user_id: Optional[int] = None
+    reserved_at: Optional[datetime] = None
     variant: Optional[VariantResponse] = None
     created_at: datetime
     updated_at: datetime

@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import List, Optional, Tuple
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -35,6 +35,7 @@ class FollowupRepository(BaseRepository[Followup]):
         to_date: Optional[datetime] = None,
         skip: int = 0,
         limit: int = 20,
+        visible_to_user_id: Optional[int] = None,
     ) -> Tuple[List[Followup], int]:
         stmt = (
             select(Followup)
@@ -46,6 +47,11 @@ class FollowupRepository(BaseRepository[Followup]):
         count_stmt = select(func.count(Followup.id))
 
         filters = []
+        if visible_to_user_id:
+            own_leads = select(Lead.id).where(
+                or_(Lead.assigned_salesperson_id == visible_to_user_id, Lead.assigned_salesperson_id.is_(None))
+            )
+            filters.append(or_(Followup.assigned_user_id == visible_to_user_id, Followup.lead_id.in_(own_leads)))
         if lead_id:
             filters.append(Followup.lead_id == lead_id)
         if assigned_user_id:

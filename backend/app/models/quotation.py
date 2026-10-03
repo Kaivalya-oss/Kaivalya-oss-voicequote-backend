@@ -44,6 +44,8 @@ class Quotation(Base, TimestampMixin):
     # Statuses: DRAFT, GENERATED, SENT, ACCEPTED, REJECTED, EXPIRED, CANCELLED
     pdf_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Client-generated key for one intake attempt; replays of the same key return this quotation.
+    idempotency_key: Mapped[Optional[str]] = mapped_column(String(100), unique=True, nullable=True)
 
     # Relationships
     customer: Mapped["Customer"] = relationship("Customer", back_populates="quotations", lazy="joined")

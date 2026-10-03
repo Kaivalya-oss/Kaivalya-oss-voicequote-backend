@@ -31,7 +31,10 @@ class RegisterRequest(BaseModel):
     full_name: str = Field(..., min_length=2, max_length=150)
     phone: Optional[str] = Field(None, min_length=10, max_length=20)
     password: str = Field(..., min_length=8, description="Minimum 8 characters")
-    role_name: str = Field(default="SALES_EXECUTIVE", description="Role name for user")
+    role_name: Optional[str] = Field(
+        default="SALES_EXECUTIVE",
+        description="Self-registration always creates SALES_EXECUTIVE; any other value is rejected (403).",
+    )
 
 
 class LoginRequest(BaseModel):

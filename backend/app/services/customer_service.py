@@ -1,12 +1,17 @@
 from decimal import Decimal
 from typing import Optional, Tuple, List
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ConflictException, NotFoundException
 from app.models.customer import Customer
+from app.models.lead import Lead
+from app.models.quotation import Quotation
+from app.models.test_ride import TestRide
 from app.repositories.customer_repository import CustomerRepository
 from app.repositories.audit_log_repository import AuditLogRepository
-from app.schemas.customer import CustomerCreate, CustomerUpdate
+from app.schemas.customer import CustomerCreate, CustomerUpdate, normalize_phone
 
 
 class CustomerService:
@@ -40,8 +45,17 @@ class CustomerService:
             occupation=req.occupation,
             preferred_language=req.preferred_language,
             budget=req.budget,
+            created_by_user_id=user_id,
         )
-        created = await self.customer_repo.create(customer)
+        try:
+            created = await self.customer_repo.create(customer)
+        except IntegrityError:
+            # Concurrent create with the same phone (e.g. a double-submitted form).
+            await self.session.rollback()
+            raise ConflictException(
+                code="CUSTOMER_PHONE_EXISTS",
+                message=f"A customer with phone number '{req.phone}' already exists.",
+            )
 
         await self.audit_repo.log_action(
             user_id=user_id,
@@ -69,9 +83,18 @@ class CustomerService:
         sort_order: str = "desc",
         page: int = 1,
         page_size: int = 20,
+        handled_by_user_id: Optional[int] = None,
     ) -> Tuple[List[Customer], int]:
         skip = (page - 1) * page_size
+        if handled_by_user_id and search:
+            # Exact phone lookup (walk-in reuse at intake) is allowed for any customer.
+            canonical = normalize_phone(search)
+            if len(canonical.lstrip("+")) >= 10 and canonical.lstrip("+").isdigit():
+                match = await self.customer_repo.get_by_phone(canonical)
+                if match:
+                    return [match], 1
         return await self.customer_repo.search_customers(
+            handled_by_user_id=handled_by_user_id,
             search=search,
             city=city,
             min_budget=min_budget,
@@ -146,7 +169,31 @@ class CustomerService:
         ip_address: Optional[str] = None,
     ) -> None:
         customer = await self.get_customer(customer_id)
-        await self.customer_repo.delete(customer)
+
+        # Sales history is never cascade-deleted: refuse while the customer has any.
+        history = {}
+        for label, model in (("quotations", Quotation), ("leads", Lead), ("test_rides", TestRide)):
+            count = (
+                await self.session.execute(select(func.count(model.id)).where(model.customer_id == customer_id))
+            ).scalar_one()
+            if count:
+                history[label] = count
+        if history:
+            summary = ", ".join(f"{n} {label.replace('_', ' ')}" for label, n in history.items())
+            raise ConflictException(
+                code="CUSTOMER_HAS_HISTORY",
+                message=f"Customer #{customer_id} cannot be deleted because they have sales history ({summary}).",
+                details=history,
+            )
+
+        try:
+            await self.customer_repo.delete(customer)
+        except IntegrityError:
+            await self.session.rollback()
+            raise ConflictException(
+                code="CUSTOMER_HAS_HISTORY",
+                message=f"Customer #{customer_id} is referenced by other records and cannot be deleted.",
+            )
 
         await self.audit_repo.log_action(
             user_id=user_id,

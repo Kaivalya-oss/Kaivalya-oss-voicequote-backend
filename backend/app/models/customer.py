@@ -1,6 +1,6 @@
 from decimal import Decimal
 from typing import Optional, List, TYPE_CHECKING
-from sqlalchemy import String, Text, Numeric, Integer
+from sqlalchemy import CheckConstraint, ForeignKey, String, Text, Numeric, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base
@@ -14,6 +14,9 @@ if TYPE_CHECKING:
 
 class Customer(Base, TimestampMixin):
     __tablename__ = "customers"
+    __table_args__ = (
+        CheckConstraint("length(btrim(full_name)) >= 2", name="ck_customers_full_name_not_blank"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     full_name: Mapped[str] = mapped_column(String(150), index=True, nullable=False)
@@ -26,6 +29,10 @@ class Customer(Base, TimestampMixin):
     occupation: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     preferred_language: Mapped[str] = mapped_column(String(50), default="English", nullable=False)
     budget: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2), nullable=True)
+    # Salesperson who registered the customer; counts as "handling" them for scoped reads.
+    created_by_user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     quotations: Mapped[List["Quotation"]] = relationship("Quotation", back_populates="customer")
     leads: Mapped[List["Lead"]] = relationship("Lead", back_populates="customer")

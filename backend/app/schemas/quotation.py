@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 from typing import List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.schemas.customer import CustomerResponse
 from app.schemas.vehicle import VariantResponse
@@ -9,9 +9,19 @@ from app.schemas.offer import OfferResponse
 from app.schemas.auth import UserResponse
 
 
+# Upper bound for a two-wheeler loan's annual interest rate; anything above is a typo.
+MAX_INTEREST_RATE = Decimal("36.00")
+
+
 class QuotationItemCreate(BaseModel):
     accessory_id: Optional[int] = None
     item_name: str = Field(..., min_length=2, max_length=150, example="All-Weather Floor Mat")
+
+    @field_validator("item_name", mode="before")
+    @classmethod
+    def _strip_name(cls, v):
+        return v.strip() if isinstance(v, str) else v
+
     item_type: str = Field(default="ACCESSORY", example="ACCESSORY")
     unit_price: Decimal = Field(..., ge=Decimal("0.00"), example=Decimal("850.00"))
     quantity: int = Field(default=1, ge=1, example=1)
@@ -37,8 +47,18 @@ class QuotationCreate(BaseModel):
     offer_id: Optional[int] = Field(None, description="Optional applicable promotional offer ID")
     down_payment: Decimal = Field(default=Decimal("0.00"), ge=Decimal("0"), example=Decimal("25000.00"))
     loan_tenure: int = Field(default=36, ge=0, le=120, example=36, description="Tenure in months (0 for full cash payment)")
-    interest_rate: Decimal = Field(default=Decimal("9.50"), ge=Decimal("0"), example=Decimal("9.50"))
+    interest_rate: Decimal = Field(
+        default=Decimal("9.50"), ge=Decimal("0"), le=MAX_INTEREST_RATE, example=Decimal("9.50"),
+        description="Annual interest rate in percent (0-36)",
+    )
     notes: Optional[str] = None
+
+    @field_validator("accessory_ids")
+    @classmethod
+    def _unique_accessories(cls, v):
+        if v and len(v) != len(set(v)):
+            raise ValueError("accessory_ids contains duplicates; each accessory can be added once")
+        return v
 
 
 class QuotationStatusUpdate(BaseModel):

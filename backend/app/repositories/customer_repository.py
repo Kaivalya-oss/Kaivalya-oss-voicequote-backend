@@ -4,6 +4,7 @@ from sqlalchemy import or_, select, func, desc, asc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.customer import Customer
+from app.schemas.customer import normalize_phone
 from app.repositories.base_repository import BaseRepository
 
 
@@ -12,7 +13,16 @@ class CustomerRepository(BaseRepository[Customer]):
         super().__init__(Customer, session)
 
     async def get_by_phone(self, phone: str) -> Optional[Customer]:
-        stmt = select(Customer).where(Customer.phone == phone.strip())
+        """Find a customer by phone, ignoring formatting. Indian numbers match on their
+        10 local digits so rows stored before normalization ("+91…") are still found."""
+        canonical = normalize_phone(phone)
+        if len(canonical) == 10 and canonical.isdigit():
+            stored_digits = func.regexp_replace(Customer.phone, r"\D", "", "g")
+            stmt = select(Customer).where(
+                or_(Customer.phone == canonical, func.right(stored_digits, 10) == canonical)
+            ).order_by(Customer.id)
+        else:
+            stmt = select(Customer).where(Customer.phone == canonical)
         result = await self.session.execute(stmt)
         return result.scalars().first()
 
@@ -26,11 +36,16 @@ class CustomerRepository(BaseRepository[Customer]):
         sort_order: str = "desc",
         skip: int = 0,
         limit: int = 20,
+        handled_by_user_id: Optional[int] = None,
     ) -> Tuple[List[Customer], int]:
         stmt = select(Customer)
         count_stmt = select(func.count(Customer.id))
 
         filters = []
+        if handled_by_user_id:
+            from app.services.access_policy import handled_customer_ids
+
+            filters.append(Customer.id.in_(handled_customer_ids(handled_by_user_id)))
         if search:
             search_term = f"%{search.strip()}%"
             filters.append(

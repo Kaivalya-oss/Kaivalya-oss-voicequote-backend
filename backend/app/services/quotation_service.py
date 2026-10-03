@@ -1,9 +1,10 @@
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import List, Optional, Tuple
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import BadRequestException, NotFoundException
+from app.core.exceptions import BadRequestException, ConflictException, NotFoundException
 from app.models.quotation import Quotation, QuotationItem
 from app.repositories.quotation_repository import QuotationRepository
 from app.repositories.customer_repository import CustomerRepository
@@ -13,6 +14,20 @@ from app.repositories.audit_log_repository import AuditLogRepository
 from app.schemas.quotation import QuotationCreate, QuotationStatusUpdate
 from app.services.emi_service import EMIService
 from app.services.pdf_service import PDFService
+
+
+# Allowed manual status changes. EXPIRED is also set automatically by the scheduler once
+# expires_at has passed. REJECTED / EXPIRED / CANCELLED are terminal.
+QUOTATION_STATUS_TRANSITIONS = {
+    "DRAFT": {"GENERATED", "CANCELLED"},
+    "GENERATED": {"SENT", "ACCEPTED", "REJECTED", "EXPIRED", "CANCELLED"},
+    "SENT": {"ACCEPTED", "REJECTED", "EXPIRED", "CANCELLED"},
+    "ACCEPTED": {"CANCELLED"},
+    "REJECTED": set(),
+    "EXPIRED": set(),
+    "CANCELLED": set(),
+}
+OPEN_QUOTATION_STATUSES = ("DRAFT", "GENERATED", "SENT")
 
 
 class QuotationService:
@@ -30,7 +45,16 @@ class QuotationService:
         req: QuotationCreate,
         sales_executive_id: int,
         ip_address: Optional[str] = None,
-    ) -> Quotation:
+        idempotency_key: Optional[str] = None,
+    ) -> Tuple[Quotation, bool]:
+        """Create a quotation. Returns (quotation, replayed); replayed is True when the
+        idempotency key was already used and the original quotation is returned."""
+        key = idempotency_key.strip() if idempotency_key else None
+        if key:
+            existing = await self.quote_repo.get_by_idempotency_key(key)
+            if existing:
+                return self._replay(existing, req, sales_executive_id), True
+
         # 1. Validate Customer
         customer = await self.customer_repo.get_by_id(req.customer_id)
         if not customer:
@@ -56,17 +80,20 @@ class QuotationService:
         if req.accessory_ids:
             for acc_id in req.accessory_ids:
                 acc = await self.vehicle_repo.get_accessory_by_id(acc_id)
-                if acc and acc.is_active:
-                    accessories_total += acc.price
-                    quotation_items.append(
-                        QuotationItem(
-                            item_name=acc.name,
-                            item_type="ACCESSORY",
-                            unit_price=acc.price,
-                            quantity=1,
-                            total_price=acc.price,
-                        )
+                if not acc:
+                    raise NotFoundException("Accessory", acc_id)
+                if not acc.is_active:
+                    raise BadRequestException("ACCESSORY_INACTIVE", f"Accessory '{acc.name}' is no longer available.")
+                accessories_total += acc.price
+                quotation_items.append(
+                    QuotationItem(
+                        item_name=acc.name,
+                        item_type="ACCESSORY",
+                        unit_price=acc.price,
+                        quantity=1,
+                        total_price=acc.price,
                     )
+                )
 
         if req.custom_items:
             for custom_item in req.custom_items:
@@ -153,12 +180,22 @@ class QuotationService:
             emi=emi_amount,
             status="GENERATED",
             expires_at=expires_at,
+            idempotency_key=key,
         )
 
         for item in quotation_items:
             quotation.items.append(item)
 
-        created_quotation = await self.quote_repo.create(quotation)
+        try:
+            created_quotation = await self.quote_repo.create(quotation)
+        except IntegrityError:
+            # A concurrent request with the same idempotency key won the insert.
+            await self.session.rollback()
+            if key:
+                existing = await self.quote_repo.get_by_idempotency_key(key)
+                if existing:
+                    return self._replay(existing, req, sales_executive_id), True
+            raise
 
         # 9. Generate PDF
         pdf_data = {
@@ -229,7 +266,21 @@ class QuotationService:
             ip_address=ip_address,
         )
 
-        return await self.quote_repo.get_by_id(created_quotation.id)  # type: ignore
+        return await self.quote_repo.get_by_id(created_quotation.id), False  # type: ignore
+
+    @staticmethod
+    def _replay(existing: Quotation, req: QuotationCreate, sales_executive_id: int) -> Quotation:
+        if existing.sales_executive_id != sales_executive_id:
+            raise ConflictException(
+                code="IDEMPOTENCY_KEY_CONFLICT",
+                message="This idempotency key was already used by another user.",
+            )
+        if existing.customer_id != req.customer_id or existing.variant_id != req.variant_id:
+            raise ConflictException(
+                code="IDEMPOTENCY_KEY_MISMATCH",
+                message="This idempotency key was already used for a different quotation request.",
+            )
+        return existing
 
     async def get_quotation(self, quotation_id: int) -> Quotation:
         quote = await self.quote_repo.get_by_id(quotation_id)
@@ -267,7 +318,32 @@ class QuotationService:
     ) -> Quotation:
         quote = await self.get_quotation(quotation_id)
         old_status = quote.status
-        quote.status = req.status.upper().strip()
+        target = req.status.upper().strip()
+        if target == old_status:
+            return quote
+
+        if (
+            target == "ACCEPTED"
+            and quote.expires_at is not None
+            and quote.expires_at < datetime.now(timezone.utc)
+            and old_status in OPEN_QUOTATION_STATUSES
+        ):
+            quote.status = "EXPIRED"
+            await self.quote_repo.update(quote)
+            raise BadRequestException(
+                "QUOTATION_EXPIRED",
+                f"Quotation {quote.quotation_number} expired on {quote.expires_at:%d-%b-%Y} and cannot be accepted. "
+                "Create a new quotation with current prices.",
+            )
+
+        allowed = QUOTATION_STATUS_TRANSITIONS.get(old_status, set())
+        if target not in allowed:
+            raise BadRequestException(
+                "INVALID_QUOTATION_TRANSITION",
+                f"Cannot change quotation {quote.quotation_number} from '{old_status}' to '{target}'. "
+                f"Allowed: {sorted(allowed) or 'none (final state)'}.",
+            )
+        quote.status = target
         updated = await self.quote_repo.update(quote)
 
         await self.audit_repo.log_action(
@@ -280,3 +356,20 @@ class QuotationService:
             ip_address=ip_address,
         )
         return updated
+
+
+async def expire_overdue_quotations(session: AsyncSession) -> int:
+    """Mark open quotations whose expires_at has passed as EXPIRED. Returns the count."""
+    from sqlalchemy import update
+
+    result = await session.execute(
+        update(Quotation)
+        .where(
+            Quotation.status.in_(OPEN_QUOTATION_STATUSES),
+            Quotation.expires_at.is_not(None),
+            Quotation.expires_at < datetime.now(timezone.utc),
+        )
+        .values(status="EXPIRED")
+    )
+    await session.commit()
+    return result.rowcount or 0

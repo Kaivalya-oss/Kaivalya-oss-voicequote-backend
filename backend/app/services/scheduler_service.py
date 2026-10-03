@@ -51,6 +51,19 @@ async def check_upcoming_followups():
         logger.error(f"Error executing check_upcoming_followups job: {e}")
 
 
+async def expire_quotations_job():
+    """Background job: move open quotations past their expiry date to EXPIRED."""
+    from app.services.quotation_service import expire_overdue_quotations
+
+    try:
+        async with AsyncSessionLocal() as session:
+            count = await expire_overdue_quotations(session)
+            if count:
+                logger.info(f"Expired {count} overdue quotation(s).")
+    except Exception as e:
+        logger.error(f"Error executing expire_quotations job: {e}")
+
+
 def start_scheduler():
     if not scheduler.running:
         scheduler.add_job(
@@ -59,6 +72,14 @@ def start_scheduler():
             minutes=10,
             id="check_followups_job",
             replace_existing=True,
+        )
+        scheduler.add_job(
+            expire_quotations_job,
+            "interval",
+            minutes=30,
+            id="expire_quotations_job",
+            replace_existing=True,
+            next_run_time=datetime.now(timezone.utc),
         )
         try:
             scheduler.start()

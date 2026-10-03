@@ -169,27 +169,30 @@ class WhatsAppService:
             pdf_path=pdf_path,
         )
 
-        # Record notification in database
-        notification = Notification(
-            user_id=user_id,
-            title=f"Quotation Sent to {customer.full_name}",
-            message=f"Quotation #{quote.quotation_number} sent via WhatsApp to {customer.phone}. Status: {result['status']}",
-            type="QUOTATION_UPDATE",
-            is_read=False,
-            reference_id=quote.id,
-            reference_type="QUOTATION",
-        )
-        self.session.add(notification)
+        # Only a real provider acceptance counts as delivery. The mock provider (no
+        # credentials configured) must never change business state or claim the
+        # customer received anything.
+        delivered = result.get("status") == "SENT"
 
-        # Transition quotation status if GENERATED
-        if quote.status == "GENERATED":
-            quote.status = "SENT"
-
-        await self.session.commit()
+        if delivered:
+            self.session.add(
+                Notification(
+                    user_id=user_id,
+                    title=f"Quotation Sent to {customer.full_name}",
+                    message=f"Quotation #{quote.quotation_number} sent via WhatsApp to {customer.phone}.",
+                    type="QUOTATION_UPDATE",
+                    is_read=False,
+                    reference_id=quote.id,
+                    reference_type="QUOTATION",
+                )
+            )
+            if quote.status == "GENERATED":
+                quote.status = "SENT"
+            await self.session.commit()
 
         await self.audit_repo.log_action(
             user_id=user_id,
-            action="WHATSAPP_QUOTATION_SENT",
+            action="WHATSAPP_QUOTATION_SENT" if delivered else "WHATSAPP_QUOTATION_SIMULATED",
             entity_type="QUOTATION",
             entity_id=quote.id,
             new_value={"recipient": customer.phone, "provider": result["provider"], "status": result["status"]},
@@ -197,7 +200,10 @@ class WhatsAppService:
         )
 
         return {
-            "success": True,
+            "success": delivered,
+            "delivered": delivered,
+            "simulated": result.get("status") == "MOCK_SENT",
             "quotation_number": quote.quotation_number,
+            "quotation_status": quote.status,
             "delivery": result,
         }

@@ -10,6 +10,7 @@ from app.database.dependencies import get_db
 from app.models.user import User
 from app.schemas.common import MessageResponse, PaginatedResponse, SuccessResponse
 from app.schemas.customer import CustomerCreate, CustomerResponse, CustomerUpdate
+from app.services.access_policy import ensure_can_edit_customer, ensure_can_view_customer, is_scoped_reader
 from app.services.customer_service import CustomerService
 
 router = APIRouter(prefix="/customers", tags=["Customers"])
@@ -59,6 +60,7 @@ async def list_customers(
         sort_order=sort_order,
         page=page,
         page_size=page_size,
+        handled_by_user_id=current_user.id if is_scoped_reader(current_user) else None,
     )
     pages = math.ceil(total / page_size) if total > 0 else 1
     return PaginatedResponse(
@@ -82,6 +84,7 @@ async def get_customer(
 ):
     service = CustomerService(db)
     customer = await service.get_customer(id)
+    await ensure_can_view_customer(db, current_user, customer)
     return SuccessResponse(data=CustomerResponse.model_validate(customer))
 
 
@@ -98,6 +101,7 @@ async def update_customer(
     ip_address: str = Depends(get_client_ip),
 ):
     service = CustomerService(db)
+    await ensure_can_edit_customer(db, current_user, await service.get_customer(id))
     updated = await service.update_customer(id, req, user_id=current_user.id, ip_address=ip_address)
     return SuccessResponse(data=CustomerResponse.model_validate(updated))
 

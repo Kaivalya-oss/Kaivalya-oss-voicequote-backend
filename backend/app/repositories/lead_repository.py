@@ -39,6 +39,7 @@ class LeadRepository(BaseRepository[Lead]):
         search: Optional[str] = None,
         skip: int = 0,
         limit: int = 20,
+        visible_to_user_id: Optional[int] = None,
     ) -> Tuple[List[Lead], int]:
         stmt = (
             select(Lead)
@@ -53,6 +54,10 @@ class LeadRepository(BaseRepository[Lead]):
         count_stmt = select(func.count(Lead.id)).join(Lead.customer)
 
         filters = []
+        if visible_to_user_id:
+            filters.append(
+                or_(Lead.assigned_salesperson_id == visible_to_user_id, Lead.assigned_salesperson_id.is_(None))
+            )
         if customer_id:
             filters.append(Lead.customer_id == customer_id)
         if assigned_salesperson_id:

@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_current_user
+from app.repositories.lead_repository import LeadRepository
+from app.services.access_policy import ensure_can_view_lead
 from app.database.dependencies import get_db
 from app.models.user import User
 from app.schemas.ai import (
@@ -40,6 +42,9 @@ async def get_lead_insights(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    lead = await LeadRepository(db).get_by_id(lead_id)
+    if lead is not None:
+        ensure_can_view_lead(current_user, lead)
     service = AIService(db)
     result = await service.get_lead_insights(lead_id)
     return SuccessResponse(data=result)

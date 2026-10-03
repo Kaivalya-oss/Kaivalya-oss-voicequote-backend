@@ -1,8 +1,20 @@
 import os
 from functools import lru_cache
 from typing import List, Union
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Used only outside production when JWT_SECRET_KEY is not configured.
+DEV_FALLBACK_JWT_SECRET = "dev-only-insecure-jwt-secret-do-not-use-in-production"
+
+# Values that have been published (committed to the repository or shipped as examples)
+# and must never sign production tokens.
+INSECURE_JWT_SECRETS = {
+    DEV_FALLBACK_JWT_SECRET,
+    "change_this_secret_in_production_super_secure_key_12345",
+    "dev_insecure_jwt_secret_key_change_in_production_998877665544332211",
+    "production_secure_secret_key_dealership_super_secret_9988",
+}
 
 
 class Settings(BaseSettings):
@@ -23,7 +35,9 @@ class Settings(BaseSettings):
     TEST_DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/dealership_test_db"
 
     # Security & JWT
-    JWT_SECRET_KEY: str = "change_this_secret_in_production_super_secure_key_12345"
+    # Required in production (APP_ENV=production): set JWT_SECRET_KEY via the environment / .env.
+    # Outside production an insecure development fallback is used when it is left empty.
+    JWT_SECRET_KEY: str = ""
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 7
@@ -51,6 +65,18 @@ class Settings(BaseSettings):
     # Storage Paths
     UPLOAD_DIR: str = "uploads"
     PDF_STORAGE_DIR: str = "generated_pdfs"
+
+    @model_validator(mode="after")
+    def enforce_jwt_secret(self) -> "Settings":
+        secret = self.JWT_SECRET_KEY.strip()
+        if self.APP_ENV.lower() == "production":
+            if len(secret) < 32 or secret in INSECURE_JWT_SECRETS:
+                raise ValueError(
+                    "JWT_SECRET_KEY must be set to a strong secret (32+ characters) when APP_ENV=production."
+                )
+        elif not secret:
+            self.JWT_SECRET_KEY = DEV_FALLBACK_JWT_SECRET
+        return self
 
 
 @lru_cache()

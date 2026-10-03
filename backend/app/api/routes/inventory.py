@@ -150,5 +150,7 @@ async def release_inventory_unit(
 ):
     service = InventoryService(db)
     notes = action.notes if action else None
-    released = await service.release_unit(id, notes=notes, user_id=current_user.id, ip_address=ip_address)
+    released = await service.release_unit(
+        id, notes=notes, user_id=current_user.id, ip_address=ip_address, actor=current_user
+    )
     return SuccessResponse(data=InventoryUnitResponse.model_validate(released))

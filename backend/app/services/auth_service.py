@@ -2,12 +2,16 @@ from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.exceptions import BadRequestException, ConflictException, UnauthorizedException
+from app.core.exceptions import BadRequestException, ConflictException, ForbiddenException, UnauthorizedException
+from app.core.permissions import RoleEnum
 from app.core.security import create_access_token, create_refresh_token, decode_token, hash_password, verify_password
 from app.models.user import User
 from app.repositories.user_repository import UserRepository
 from app.repositories.audit_log_repository import AuditLogRepository
 from app.schemas.auth import LoginRequest, RegisterRequest, TokenResponse, UserResponse, RoleResponse
+
+
+PUBLIC_SIGNUP_ROLE = RoleEnum.SALES_EXECUTIVE.value
 
 
 class AuthService:
@@ -24,10 +28,18 @@ class AuthService:
                 message=f"User with email '{req.email}' already exists.",
             )
 
-        role = await self.user_repo.get_role_by_name(req.role_name)
+        # Public self-registration may only create Sales Executives. Elevated roles
+        # (ADMIN, DEALER_OWNER, FINANCE, INVENTORY) must be granted by management, and
+        # roles are never created on the fly from client input.
+        requested_role = (req.role_name or PUBLIC_SIGNUP_ROLE).upper().strip()
+        if requested_role != PUBLIC_SIGNUP_ROLE:
+            raise ForbiddenException(
+                f"Self-registration can only create '{PUBLIC_SIGNUP_ROLE}' accounts. "
+                "Ask an administrator to assign other roles."
+            )
+        role = await self.user_repo.get_role_by_name(PUBLIC_SIGNUP_ROLE)
         if not role:
-            # Create role if missing for initial flexibility
-            role = await self.user_repo.create_role(req.role_name, f"System role {req.role_name}")
+            raise BadRequestException("ROLE_NOT_CONFIGURED", f"Role '{PUBLIC_SIGNUP_ROLE}' is not configured.")
 
         user = User(
             email=req.email.lower().strip(),
@@ -35,7 +47,8 @@ class AuthService:
             phone=req.phone.strip() if req.phone else None,
             password_hash=hash_password(req.password),
             role_id=role.id,
-            is_active=True,
+            # Self-registered accounts wait for a manager to approve them (POST /users/{id}/activate).
+            is_active=False,
         )
         created_user = await self.user_repo.create(user)
 
@@ -60,7 +73,11 @@ class AuthService:
             raise UnauthorizedException("Invalid email or password.")
 
         if not user.is_active:
-            raise UnauthorizedException("User account is inactive. Please contact administrator.")
+            if user.last_login_at is None:
+                raise UnauthorizedException(
+                    "Your account is awaiting approval. A manager must activate it before you can sign in."
+                )
+            raise UnauthorizedException("Your account has been deactivated. Please contact an administrator.")
 
         await self.user_repo.update_last_login(user)
 

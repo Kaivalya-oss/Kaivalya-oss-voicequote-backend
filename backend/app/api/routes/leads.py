@@ -9,6 +9,12 @@ from app.database.dependencies import get_db
 from app.models.user import User
 from app.schemas.common import MessageResponse, PaginatedResponse, SuccessResponse
 from app.schemas.lead import LeadCreate, LeadResponse, LeadStatusTransitionRequest, LeadUpdate
+from app.services.access_policy import (
+    ensure_can_assign_lead,
+    ensure_can_manage_lead,
+    ensure_can_view_lead,
+    is_scoped_reader,
+)
 from app.services.lead_service import LeadService
 
 router = APIRouter(prefix="/leads", tags=["Leads"])
@@ -26,6 +32,7 @@ async def create_lead(
     current_user: User = Depends(require_roles(*SALES_ROLES)),
     ip_address: str = Depends(get_client_ip),
 ):
+    ensure_can_assign_lead(current_user, req.assigned_salesperson_id)
     service = LeadService(db)
     lead = await service.create_lead(req, user_id=current_user.id, ip_address=ip_address)
     return SuccessResponse(data=LeadResponse.model_validate(lead))
@@ -58,6 +65,7 @@ async def list_leads(
         search=search,
         page=page,
         page_size=page_size,
+        visible_to_user_id=current_user.id if is_scoped_reader(current_user) else None,
     )
     pages = math.ceil(total / page_size) if total > 0 else 1
     return PaginatedResponse(
@@ -81,6 +89,7 @@ async def get_lead(
 ):
     service = LeadService(db)
     lead = await service.get_lead(id)
+    ensure_can_view_lead(current_user, lead)
     return SuccessResponse(data=LeadResponse.model_validate(lead))
 
 
@@ -97,6 +106,9 @@ async def update_lead(
     ip_address: str = Depends(get_client_ip),
 ):
     service = LeadService(db)
+    ensure_can_manage_lead(current_user, await service.get_lead(id))
+    if req.assigned_salesperson_id is not None:
+        ensure_can_assign_lead(current_user, req.assigned_salesperson_id)
     updated = await service.update_lead(id, req, user_id=current_user.id, ip_address=ip_address)
     return SuccessResponse(data=LeadResponse.model_validate(updated))
 
@@ -114,6 +126,7 @@ async def transition_lead_status(
     ip_address: str = Depends(get_client_ip),
 ):
     service = LeadService(db)
+    ensure_can_manage_lead(current_user, await service.get_lead(id))
     updated = await service.transition_status(id, req, user_id=current_user.id, ip_address=ip_address)
     return SuccessResponse(data=LeadResponse.model_validate(updated))
 

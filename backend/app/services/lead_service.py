@@ -1,13 +1,19 @@
 from typing import Dict, List, Optional, Set, Tuple
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import BadRequestException, NotFoundException
-from app.models.lead import Lead
+from app.core.exceptions import BadRequestException, ConflictException, NotFoundException
+from app.models.customer import Customer
+from app.models.lead import Lead, LeadStatusHistory
 from app.repositories.lead_repository import LeadRepository
 from app.repositories.customer_repository import CustomerRepository
 from app.repositories.vehicle_repository import VehicleRepository
 from app.repositories.audit_log_repository import AuditLogRepository
 from app.schemas.lead import LeadCreate, LeadUpdate, LeadStatusTransitionRequest
+from app.services.followup_service import cancel_open_followups_for_lead
+
+# Leads in these states are closed; a new enquiry may open a fresh lead.
+CLOSED_LEAD_STATUSES: Set[str] = {"PURCHASED", "LOST"}
 
 # Valid lead state transition graph
 VALID_TRANSITIONS: Dict[str, Set[str]] = {
@@ -36,14 +42,42 @@ class LeadService:
         user_id: Optional[int] = None,
         ip_address: Optional[str] = None,
     ) -> Lead:
-        customer = await self.customer_repo.get_by_id(req.customer_id)
-        if not customer:
+        # Lock the customer row so concurrent creates for the same customer are serialized;
+        # this is what makes the open-lead check below race-free.
+        locked = await self.session.execute(
+            select(Customer.id).where(Customer.id == req.customer_id).with_for_update()
+        )
+        if locked.scalar_one_or_none() is None:
             raise NotFoundException("Customer", req.customer_id)
 
         if req.interested_variant_id:
             variant = await self.vehicle_repo.get_variant_by_id(req.interested_variant_id)
             if not variant:
                 raise NotFoundException("VehicleVariant", req.interested_variant_id)
+
+            existing = (
+                await self.session.execute(
+                    select(Lead.id, Lead.status, Lead.assigned_salesperson_id)
+                    .where(
+                        Lead.customer_id == req.customer_id,
+                        Lead.interested_variant_id == req.interested_variant_id,
+                        Lead.status.not_in(CLOSED_LEAD_STATUSES),
+                    )
+                    .order_by(Lead.id)
+                    .limit(1)
+                )
+            ).first()
+            if existing is not None:
+                await self.session.rollback()
+                raise ConflictException(
+                    code="LEAD_ALREADY_OPEN",
+                    message=f"Customer already has open lead #{existing.id} ({existing.status}) for this vehicle.",
+                    details={
+                        "lead_id": existing.id,
+                        "status": existing.status,
+                        "assigned_salesperson_id": existing.assigned_salesperson_id,
+                    },
+                )
 
         lead = Lead(
             customer_id=req.customer_id,
@@ -93,9 +127,11 @@ class LeadService:
         search: Optional[str] = None,
         page: int = 1,
         page_size: int = 20,
+        visible_to_user_id: Optional[int] = None,
     ) -> Tuple[List[Lead], int]:
         skip = (page - 1) * page_size
         return await self.lead_repo.search_leads(
+            visible_to_user_id=visible_to_user_id,
             customer_id=customer_id,
             assigned_salesperson_id=assigned_salesperson_id,
             status=status,
@@ -122,6 +158,8 @@ class LeadService:
         if req.priority is not None:
             lead.priority = req.priority.upper().strip()
         if req.interested_variant_id is not None:
+            if not await self.vehicle_repo.get_variant_by_id(req.interested_variant_id):
+                raise NotFoundException("VehicleVariant", req.interested_variant_id)
             lead.interested_variant_id = req.interested_variant_id
         if req.expected_purchase_date is not None:
             lead.expected_purchase_date = req.expected_purchase_date
@@ -147,30 +185,56 @@ class LeadService:
         user_id: Optional[int] = None,
         ip_address: Optional[str] = None,
     ) -> Lead:
-        lead = await self.get_lead(lead_id)
-        current_status = lead.status
         target_status = req.to_status.upper().strip()
 
+        # Row lock: concurrent transitions on the same lead queue up here and each one
+        # re-validates against the status committed by the previous one.
+        current_status = (
+            await self.session.execute(select(Lead.status).where(Lead.id == lead_id).with_for_update())
+        ).scalar_one_or_none()
+        if current_status is None:
+            raise NotFoundException("Lead", lead_id)
+
+        if req.from_status and req.from_status.upper().strip() != current_status:
+            await self.session.rollback()
+            raise ConflictException(
+                code="LEAD_STATE_CHANGED",
+                message=(
+                    f"Lead #{lead_id} is now '{current_status}', not '{req.from_status}'. "
+                    "It was changed by someone else; refresh and try again."
+                ),
+                details={"current_status": current_status},
+            )
+
         if current_status == target_status:
-            return lead
+            await self.session.rollback()
+            return await self._fresh_lead(lead_id)
 
         allowed_targets = VALID_TRANSITIONS.get(current_status, set())
         if target_status not in allowed_targets:
+            await self.session.rollback()
             raise BadRequestException(
                 code="INVALID_STATE_TRANSITION",
-                message=f"Cannot transition lead from '{current_status}' to '{target_status}'. Allowed transitions from '{current_status}' are: {list(allowed_targets)}.",
+                message=f"Cannot transition lead from '{current_status}' to '{target_status}'. Allowed transitions from '{current_status}' are: {sorted(allowed_targets)}.",
             )
 
-        lead.status = target_status
-        updated = await self.lead_repo.update(lead)
-
-        await self.lead_repo.add_status_history(
-            lead_id=lead.id,
-            from_status=current_status,
-            to_status=target_status,
-            user_id=user_id,
-            reason=req.reason,
+        lead = await self.session.get(Lead, lead_id)
+        lead.status = target_status  # type: ignore[union-attr]
+        self.session.add(
+            LeadStatusHistory(
+                lead_id=lead_id,
+                from_status=current_status,
+                to_status=target_status,
+                changed_by_user_id=user_id,
+                reason=req.reason,
+            )
         )
+        if target_status in CLOSED_LEAD_STATUSES:
+            await cancel_open_followups_for_lead(
+                self.session, lead_id, f"Lead closed as {target_status}"
+            )
+        # Status, history row and any follow-up cancellations commit together, releasing the lock.
+        await self.session.commit()
 
         await self.audit_repo.log_action(
             user_id=user_id,
@@ -181,7 +245,15 @@ class LeadService:
             new_value={"status": target_status, "reason": req.reason},
             ip_address=ip_address,
         )
-        return await self.lead_repo.get_by_id(updated.id)  # type: ignore
+        return await self._fresh_lead(lead_id)
+
+    async def _fresh_lead(self, lead_id: int) -> Lead:
+        """Reload a lead bypassing the session identity map so status_history is current."""
+        self.session.expire_all()
+        lead = await self.lead_repo.get_by_id(lead_id)
+        if not lead:
+            raise NotFoundException("Lead", lead_id)
+        return lead
 
     async def delete_lead(
         self,

@@ -2,7 +2,7 @@ from datetime import datetime
 import math
 import os
 from typing import Optional
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Header, Query, Response, status
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +14,7 @@ from app.database.dependencies import get_db
 from app.models.user import User
 from app.schemas.common import PaginatedResponse, SuccessResponse
 from app.schemas.quotation import QuotationCreate, QuotationResponse, QuotationStatusUpdate
+from app.services.access_policy import ensure_can_modify_quotation, ensure_can_view_quotation, is_scoped_reader
 from app.services.quotation_service import QuotationService
 from app.services.whatsapp_service import WhatsAppService
 
@@ -28,12 +29,26 @@ router = APIRouter(prefix="/quotations", tags=["Quotations"])
 )
 async def create_quotation(
     req: QuotationCreate,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_roles(*SALES_ROLES)),
     ip_address: str = Depends(get_client_ip),
+    idempotency_key: Optional[str] = Header(
+        None,
+        alias="Idempotency-Key",
+        min_length=8,
+        max_length=100,
+        description="Client-generated key for one quotation attempt. Repeating a request with the same key "
+        "returns the original quotation (200, Idempotent-Replayed: true) instead of creating another.",
+    ),
 ):
     service = QuotationService(db)
-    quote = await service.create_quotation(req, sales_executive_id=current_user.id, ip_address=ip_address)
+    quote, replayed = await service.create_quotation(
+        req, sales_executive_id=current_user.id, ip_address=ip_address, idempotency_key=idempotency_key
+    )
+    if replayed:
+        response.status_code = status.HTTP_200_OK
+        response.headers["Idempotent-Replayed"] = "true"
     return SuccessResponse(data=QuotationResponse.model_validate(quote))
 
 
@@ -56,7 +71,7 @@ async def list_quotations(
     service = QuotationService(db)
     quotes, total = await service.list_quotations(
         customer_id=customer_id,
-        sales_executive_id=sales_executive_id,
+        sales_executive_id=current_user.id if is_scoped_reader(current_user) else sales_executive_id,
         status=status,
         from_date=from_date,
         to_date=to_date,
@@ -85,6 +100,7 @@ async def get_quotation(
 ):
     service = QuotationService(db)
     quote = await service.get_quotation(id)
+    ensure_can_view_quotation(current_user, quote)
     return SuccessResponse(data=QuotationResponse.model_validate(quote))
 
 
@@ -95,9 +111,11 @@ async def get_quotation(
 async def get_quotation_pdf(
     id: int,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     service = QuotationService(db)
     quote = await service.get_quotation(id)
+    ensure_can_view_quotation(current_user, quote)
     pdf_filename = f"{quote.quotation_number}.pdf"
     pdf_path = os.path.join(settings.PDF_STORAGE_DIR, pdf_filename)
 
@@ -128,6 +146,7 @@ async def update_quotation_status(
     ip_address: str = Depends(get_client_ip),
 ):
     service = QuotationService(db)
+    ensure_can_modify_quotation(current_user, await service.get_quotation(id))
     updated = await service.update_status(id, req, user_id=current_user.id, ip_address=ip_address)
     return SuccessResponse(data=QuotationResponse.model_validate(updated))
 
@@ -142,6 +161,7 @@ async def send_quotation_whatsapp(
     current_user: User = Depends(require_roles(*SALES_ROLES)),
     ip_address: str = Depends(get_client_ip),
 ):
+    ensure_can_modify_quotation(current_user, await QuotationService(db).get_quotation(id))
     service = WhatsAppService(db)
     result = await service.send_quotation_via_whatsapp(
         quotation_id=id,
