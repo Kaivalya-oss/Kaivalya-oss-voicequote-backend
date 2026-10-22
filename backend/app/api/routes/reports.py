@@ -1,10 +1,12 @@
-from datetime import datetime
-from typing import List, Optional
-from fastapi import APIRouter, Depends, Query
+from datetime import date, datetime
+from typing import List, Literal, Optional
+from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_current_user, require_roles
-from app.core.permissions import MANAGEMENT_ROLES
+from app.core.permissions import MANAGEMENT_ROLES, RoleEnum
+from app.services.access_policy import is_scoped_reader
+from app.services.daily_export_service import DailyExportService, today_ist
 from app.database.dependencies import get_db
 from app.models.user import User
 from app.schemas.common import SuccessResponse
@@ -14,6 +16,35 @@ from app.services.quotation_service import QuotationService
 from app.schemas.quotation import QuotationResponse
 
 router = APIRouter(prefix="/reports", tags=["Reports"])
+
+
+@router.get(
+    "/daily-export",
+    summary="Download one day's activity (customers, leads, quotations, follow-ups, test rides) as Excel or CSV",
+    responses={200: {"content": {
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {},
+        "text/csv": {},
+    }}},
+)
+async def daily_export(
+    format: Literal["xlsx", "csv"] = Query("xlsx", description="xlsx (Excel workbook) or csv"),
+    day: Optional[date] = Query(None, description="Day to export (YYYY-MM-DD, Indian time). Defaults to today."),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(*MANAGEMENT_ROLES, RoleEnum.SALES_EXECUTIVE.value)),
+):
+    day = day or today_ist()
+    # Salespeople export only their own records; management exports everyone's
+    scoped = is_scoped_reader(current_user)
+    scope = f"Own records of {current_user.full_name}" if scoped else "All staff"
+    sections = await DailyExportService(db).build(day, scoped_user_id=current_user.id if scoped else None)
+    name = f"daily-update-{day.isoformat()}.{format}"
+    if format == "csv":
+        content, media = DailyExportService.to_csv(day, sections, scope), "text/csv; charset=utf-8"
+    else:
+        content = DailyExportService.to_xlsx(day, sections, scope)
+        media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    return Response(content=content, media_type=media,
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
 @router.get(

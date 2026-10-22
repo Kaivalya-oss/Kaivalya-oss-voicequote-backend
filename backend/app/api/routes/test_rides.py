@@ -15,7 +15,13 @@ from app.schemas.test_ride import (
     TestRideCreate,
     TestRideResponse,
 )
-from app.services.access_policy import ensure_can_view_owned, is_scoped_reader
+from app.services.access_policy import (
+    ensure_can_manage_test_ride,
+    ensure_can_view_customer,
+    ensure_can_view_owned,
+    is_scoped_reader,
+)
+from app.services.customer_service import CustomerService
 from app.services.test_ride_service import TestRideService
 
 router = APIRouter(prefix="/test-rides", tags=["Test Rides"])
@@ -23,6 +29,13 @@ router = APIRouter(prefix="/test-rides", tags=["Test Rides"])
 
 class CancelRideRequest(BaseModel):
     reason: Optional[str] = None
+
+
+async def _ride_for_change(service: TestRideService, ride_id: int, user: User):
+    ride = await service.get_test_ride(ride_id)
+    ensure_can_view_owned(user, ride.sales_executive_id, "TestRide", ride.id)
+    ensure_can_manage_test_ride(user, ride)
+    return ride
 
 
 @router.post(
@@ -37,6 +50,8 @@ async def book_test_ride(
     current_user: User = Depends(require_roles(*SALES_ROLES)),
     ip_address: str = Depends(get_client_ip),
 ):
+    # A salesperson can only book rides for customers they handle
+    await ensure_can_view_customer(db, current_user, await CustomerService(db).get_customer(req.customer_id))
     service = TestRideService(db)
     ride = await service.book_test_ride(req, sales_executive_id=current_user.id, ip_address=ip_address)
     return SuccessResponse(data=TestRideResponse.model_validate(ride))
@@ -108,6 +123,7 @@ async def confirm_test_ride(
     ip_address: str = Depends(get_client_ip),
 ):
     service = TestRideService(db)
+    await _ride_for_change(service, id, current_user)
     confirmed = await service.confirm_test_ride(id, user_id=current_user.id, ip_address=ip_address)
     return SuccessResponse(data=TestRideResponse.model_validate(confirmed))
 
@@ -125,6 +141,7 @@ async def complete_test_ride(
     ip_address: str = Depends(get_client_ip),
 ):
     service = TestRideService(db)
+    await _ride_for_change(service, id, current_user)
     completed = await service.complete_test_ride(id, req, user_id=current_user.id, ip_address=ip_address)
     return SuccessResponse(data=TestRideResponse.model_validate(completed))
 
@@ -142,6 +159,7 @@ async def cancel_test_ride(
     ip_address: str = Depends(get_client_ip),
 ):
     service = TestRideService(db)
+    await _ride_for_change(service, id, current_user)
     reason = req.reason if req else None
     cancelled = await service.cancel_test_ride(id, reason=reason, user_id=current_user.id, ip_address=ip_address)
     return SuccessResponse(data=TestRideResponse.model_validate(cancelled))

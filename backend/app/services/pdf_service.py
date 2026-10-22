@@ -80,7 +80,7 @@ class PDFService:
 
         # 1. Header Banner Table
         header_text = [
-            Paragraph("<b>ANTIGRAVITY TWO-WHEELER SHOWROOM</b>", title_style),
+            Paragraph("<b>NAVKAR TWO-WHEELER SHOWROOM</b>", title_style),
             Paragraph("Official Authorized Dealership & Sales Automation Center", subtitle_style),
             Paragraph("100 Feet Ring Road, Tech Corridor | Contact: +91 98765 43210 | info@dealership.com", subtitle_style),
         ]
@@ -273,3 +273,124 @@ class PDFService:
         doc.build(story)
         logger.info(f"Generated quotation PDF: {filepath}")
         return filepath
+
+    def generate_comparison_pdf(self, quotes: List[Any]) -> bytes:
+        """Side-by-side comparison of 2-3 quotations for one customer, built in memory.
+
+        `quotes` are Quotation ORM objects with customer, variant(model, brand) and items loaded.
+        Figures are printed exactly as stored; nothing is recalculated here.
+        """
+        from io import BytesIO
+
+        buf = BytesIO()
+        doc = SimpleDocTemplate(buf, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
+        styles = getSampleStyleSheet()
+        title = ParagraphStyle("CmpTitle", parent=styles["Heading1"], fontSize=18, leading=22,
+                               textColor=colors.HexColor("#1A365D"), spaceAfter=4)
+        sub = ParagraphStyle("CmpSub", parent=styles["Normal"], fontSize=9, leading=12,
+                             textColor=colors.HexColor("#4A5568"))
+        section = ParagraphStyle("CmpSection", parent=styles["Heading2"], fontSize=11, leading=14,
+                                 textColor=colors.HexColor("#2B6CB0"), spaceBefore=10, spaceAfter=4)
+        cell = ParagraphStyle("CmpCell", parent=styles["Normal"], fontSize=8.5, leading=11,
+                              textColor=colors.HexColor("#2D3748"))
+        bold = ParagraphStyle("CmpBold", parent=cell, fontName="Helvetica-Bold", textColor=colors.HexColor("#1A202C"))
+
+        def money(v) -> str:
+            return f"Rs. {Decimal(v or 0):,.2f}"
+
+        def vehicle(q) -> str:
+            v = q.variant
+            if not v:
+                return f"Variant #{q.variant_id}"
+            brand = v.model.brand.name if v.model and v.model.brand else ""
+            model = v.model.name if v.model else ""
+            return " ".join(x for x in (brand, model, v.name) if x)
+
+        customer = quotes[0].customer
+        story: List[Any] = [
+            Paragraph("<b>NAVKAR TWO-WHEELER SHOWROOM</b>", title),
+            Paragraph("Vehicle comparison quotation", sub),
+            Paragraph(
+                f"Prepared for <b>{customer.full_name}</b> ({customer.phone}) on {datetime.now():%d-%b-%Y}", sub
+            ),
+            Spacer(1, 10),
+        ]
+
+        n = len(quotes)
+        label_w = 150
+        col_w = (540 - label_w) / n
+        letters = "ABC"
+        head = ParagraphStyle("CmpHead", parent=bold, textColor=colors.whitesmoke)
+        header = [Paragraph("<b>Item</b>", head)] + [
+            Paragraph(f"<b>Vehicle {letters[i]}</b><br/>{vehicle(q)}", head) for i, q in enumerate(quotes)
+        ]
+
+        def row(label, values, strong=False):
+            st = bold if strong else cell
+            return [Paragraph(label, bold if strong else cell)] + [Paragraph(str(x), st) for x in values]
+
+        def spec(q, key):
+            v = q.variant
+            if not v:
+                return "-"
+            if key == "engine":
+                return f"{v.engine_cc} cc" if v.engine_cc else "-"
+            return getattr(v, key, None) or "-"
+
+        data = [
+            header,
+            row("Quotation number", [q.quotation_number for q in quotes]),
+            row("Engine", [spec(q, "engine") for q in quotes]),
+            row("Fuel / transmission", [f"{spec(q, 'fuel_type')} / {spec(q, 'transmission')}" for q in quotes]),
+            row("Ex-showroom price", [money(q.base_price) for q in quotes]),
+            row("Insurance", [money(q.insurance) for q in quotes]),
+            row("RTO & registration", [money(q.rto) for q in quotes]),
+            row("Accessories & items", [money(q.accessories) for q in quotes]),
+            row("Discount", [f"- {money(q.discount)}" if q.discount else money(0) for q in quotes]),
+            row("On-road final price", [money(q.final_price) for q in quotes], strong=True),
+            row("Down payment", [money(q.down_payment) for q in quotes]),
+            row("Loan amount", [money(q.loan_amount) for q in quotes]),
+            row("Interest / tenure", [f"{q.interest_rate}% p.a. / {q.loan_tenure} months" if q.loan_tenure else "No loan" for q in quotes]),
+            row("Monthly EMI", [money(q.emi) if q.emi else "-" for q in quotes], strong=True),
+            row("Valid until", [f"{q.expires_at:%d-%b-%Y}" if q.expires_at else "-" for q in quotes]),
+        ]
+        final_row = 9
+        table = Table(data, colWidths=[label_w] + [col_w] * n, repeatRows=1)
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2B6CB0")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E0")),
+            ("BACKGROUND", (0, final_row), (-1, final_row), colors.HexColor("#EBF8FF")),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ]))
+        story.append(table)
+
+        if n == 2:
+            a, b = quotes
+            diff = Decimal(b.final_price) - Decimal(a.final_price)
+            cheaper = "A" if diff > 0 else "B"
+            if diff:
+                story.append(Spacer(1, 8))
+                story.append(Paragraph(
+                    f"Vehicle {cheaper} is {money(abs(diff))} cheaper on-road"
+                    + (f"; EMI difference {money(abs(Decimal(b.emi) - Decimal(a.emi)))} per month." if a.emi or b.emi else "."),
+                    bold,
+                ))
+
+        items_present = [q for q in quotes if q.items]
+        if items_present:
+            story.append(Paragraph("<b>Accessories and items included</b>", section))
+            for i, q in enumerate(quotes):
+                names = ", ".join(f"{it.item_name} ({money(it.total_price)})" for it in q.items) or "None"
+                story.append(Paragraph(f"<b>Vehicle {letters[i]}:</b> {names}", cell))
+
+        story.append(Spacer(1, 12))
+        story.append(Paragraph(
+            "<b>Terms:</b> Each vehicle's quotation is valid for 15 days from issue. Prices are subject to "
+            "statutory RTO and insurance revisions at delivery. Individual quotation PDFs are available for each vehicle.",
+            sub,
+        ))
+        doc.build(story)
+        return buf.getvalue()

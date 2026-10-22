@@ -153,6 +153,15 @@ def ensure_can_modify_quotation(user: User, quotation: Quotation) -> None:
     )
 
 
+def ensure_can_manage_test_ride(user: User, ride) -> None:
+    if is_manager(user) or ride.sales_executive_id == user.id:
+        return
+    raise ForbiddenException(
+        f"Test ride #{ride.id} was booked by {_owner_label(ride.sales_executive)}. "
+        "Only that salesperson or a manager can change it."
+    )
+
+
 def ensure_can_release_unit(user: User, unit: InventoryUnit) -> None:
     if user.role.name in MANAGEMENT_ROLES or user.role.name in INVENTORY_ROLES:
         return

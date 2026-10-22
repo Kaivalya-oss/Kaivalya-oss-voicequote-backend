@@ -7,9 +7,18 @@ from httpx import AsyncClient
 async def test_followup_scheduling_and_completion(client: AsyncClient, sales_token: str):
     headers = {"Authorization": f"Bearer {sales_token}"}
 
-    # Fetch existing lead
-    leads_res = await client.get("/api/v1/leads", headers=headers)
-    lead_id = leads_res.json()["items"][0]["id"]
+    # Create our own open lead (an arbitrary existing lead may be closed, and closed leads
+    # correctly refuse new follow-ups)
+    import time
+    cust = await client.post(
+        "/api/v1/customers",
+        json={"full_name": "Follow-up Test", "phone": "6" + str(time.time_ns())[-9:]},
+        headers=headers,
+    )
+    lead_res = await client.post(
+        "/api/v1/leads", json={"customer_id": cust.json()["data"]["id"]}, headers=headers
+    )
+    lead_id = lead_res.json()["data"]["id"]
 
     scheduled_time = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
 

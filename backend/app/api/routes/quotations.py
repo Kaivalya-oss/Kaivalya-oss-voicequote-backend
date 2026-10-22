@@ -1,22 +1,25 @@
 from datetime import datetime
 import math
 import os
-from typing import Optional
+from typing import List, Optional
 from fastapi import APIRouter, Depends, Header, Query, Response, status
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_client_ip, get_current_user, require_roles
 from app.core.config import settings
-from app.core.exceptions import NotFoundException
+from app.core.exceptions import BadRequestException, NotFoundException
 from app.core.permissions import SALES_ROLES, ALL_ROLES
 from app.database.dependencies import get_db
 from app.models.user import User
 from app.schemas.common import PaginatedResponse, SuccessResponse
 from app.schemas.quotation import QuotationCreate, QuotationResponse, QuotationStatusUpdate
 from app.services.access_policy import ensure_can_modify_quotation, ensure_can_view_quotation, is_scoped_reader
+from app.services.pdf_service import PDFService
 from app.services.quotation_service import QuotationService
 from app.services.whatsapp_service import WhatsAppService
+from app.services.email_service import EmailService
+from pydantic import BaseModel, EmailStr, Field
 
 router = APIRouter(prefix="/quotations", tags=["Quotations"])
 
@@ -86,6 +89,32 @@ async def list_quotations(
         page_size=page_size,
         pages=pages,
     )
+
+
+@router.get(
+    "/compare/pdf",
+    summary="Side-by-side comparison PDF of 2-3 quotations for the same customer",
+)
+async def get_comparison_pdf(
+    ids: List[int] = Query(..., description="Quotation ids to compare (2-3, same customer), e.g. ?ids=12&ids=13"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    unique_ids = list(dict.fromkeys(ids))
+    if not 2 <= len(unique_ids) <= 3:
+        raise BadRequestException("COMPARE_COUNT", "Choose 2 or 3 different quotations to compare.")
+    service = QuotationService(db)
+    quotes = []
+    for qid in unique_ids:
+        quote = await service.get_quotation(qid)
+        ensure_can_view_quotation(current_user, quote)
+        quotes.append(quote)
+    if len({q.customer_id for q in quotes}) != 1:
+        raise BadRequestException("COMPARE_CUSTOMER_MISMATCH", "Compared quotations must belong to the same customer.")
+    pdf = PDFService().generate_comparison_pdf(quotes)
+    name = "comparison-" + "-vs-".join(q.quotation_number for q in quotes) + ".pdf"
+    return Response(content=pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
 @router.get(
@@ -166,6 +195,34 @@ async def send_quotation_whatsapp(
     result = await service.send_quotation_via_whatsapp(
         quotation_id=id,
         user_id=current_user.id,
+        ip_address=ip_address,
+    )
+    return SuccessResponse(data=result)
+
+
+class SendEmailRequest(BaseModel):
+    email: Optional[EmailStr] = Field(
+        None, description="Recipient; defaults to the customer's saved email address"
+    )
+
+
+@router.post(
+    "/{id}/send-email",
+    summary="Email the quotation PDF to the customer and notify the admin",
+)
+async def send_quotation_email(
+    id: int,
+    req: Optional[SendEmailRequest] = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(*SALES_ROLES)),
+    ip_address: str = Depends(get_client_ip),
+):
+    ensure_can_modify_quotation(current_user, await QuotationService(db).get_quotation(id))
+    result = await EmailService(db).send_quotation_email(
+        quotation_id=id,
+        user_id=current_user.id,
+        sent_by=current_user.full_name,
+        to_email=str(req.email) if req and req.email else None,
         ip_address=ip_address,
     )
     return SuccessResponse(data=result)

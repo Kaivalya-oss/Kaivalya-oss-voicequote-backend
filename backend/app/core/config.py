@@ -59,12 +59,18 @@ class Settings(BaseSettings):
     WHATSAPP_PHONE_NUMBER_ID: str = ""
     WHATSAPP_API_VERSION: str = "v18.0"
 
+    # Email (SMTP). Empty SMTP_USER / SMTP_PASSWORD = simulation mode: nothing is sent.
+    # For Gmail use smtp.gmail.com:587 and a Google *app password* (never the account password).
+    SMTP_HOST: str = "smtp.gmail.com"
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM_NAME: str = "VoiceQuote Dealership"
+    # Receives a notice each time a quotation is emailed to a customer (defaults to SMTP_USER).
+    ADMIN_NOTIFY_EMAIL: str = ""
+
     # Gemini AI
     GEMINI_API_KEY: str = ""
-
-    # Google Sheets Integration
-    GOOGLE_SHEETS_SPREADSHEET_ID: str = ""
-    GOOGLE_SERVICE_ACCOUNT_FILE: str = ""
 
     # Storage Paths
     UPLOAD_DIR: str = "uploads"
