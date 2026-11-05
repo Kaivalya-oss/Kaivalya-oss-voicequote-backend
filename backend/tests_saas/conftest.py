@@ -8,7 +8,10 @@ Showroom databases come from docker-compose.saas-test.yml; no real showroom data
 import asyncio
 import os
 import sys
+import tempfile
 import uuid
+
+from cryptography.fernet import Fernet
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -17,6 +20,11 @@ CONTROL_DB = "voicequote_control_test"
 os.environ["MULTI_TENANT_ENABLED"] = "true"
 os.environ["APP_ENV"] = "test"
 os.environ["CONTROL_PLANE_DATABASE_URL"] = f"{_base}/{CONTROL_DB}"
+os.environ["TENANT_DB_ALLOW_PRIVATE_HOSTS"] = "true"  # the test servers are on a private Docker network
+_secrets_dir = tempfile.mkdtemp(prefix="vq-test-secrets-")
+os.environ["SECRETS_LOCAL_DIR"] = _secrets_dir
+os.environ["SECRETS_MASTER_KEY"] = Fernet.generate_key().decode()
+os.environ["PDF_STORAGE_DIR"] = tempfile.mkdtemp(prefix="vq-test-pdfs-")
 
 import asyncpg  # noqa: E402
 import pytest  # noqa: E402

@@ -20,9 +20,11 @@ api_v1_router = APIRouter(prefix="/api/v1")
 
 if settings.MULTI_TENANT_ENABLED:
     # Accounts and staff live in the control plane; the single-showroom versions are not served.
+    from app.control_plane.database_routes import router as database_router
     from app.control_plane.routes import router as platform_router
 
     api_v1_router.include_router(platform_router)
+    api_v1_router.include_router(database_router)
 else:
     api_v1_router.include_router(auth_router)
     api_v1_router.include_router(users_router)

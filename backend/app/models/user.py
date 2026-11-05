@@ -1,6 +1,7 @@
+import uuid
 from datetime import datetime
 from typing import Optional, List, TYPE_CHECKING
-from sqlalchemy import String, Boolean, DateTime, ForeignKey, Integer
+from sqlalchemy import String, Boolean, DateTime, ForeignKey, Integer, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base
@@ -36,6 +37,8 @@ class User(Base, TimestampMixin):
     role_id: Mapped[int] = mapped_column(ForeignKey("roles.id", ondelete="RESTRICT"), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Multi-tenant mode: the central account this staff row belongs to. Passwords live centrally.
+    central_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(Uuid, unique=True, index=True, nullable=True)
 
     role: Mapped["Role"] = relationship("Role", back_populates="users", lazy="joined")
     quotations: Mapped[List["Quotation"]] = relationship("Quotation", back_populates="sales_executive")

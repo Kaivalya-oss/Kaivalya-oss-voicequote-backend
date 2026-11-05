@@ -1,0 +1,42 @@
+# Two independent TLS-only PostgreSQL servers standing in for showroom-owned databases.
+# Test use only: fixed passwords, data in tmpfs. Generate certificates first with
+# scripts/gen_saas_test_certs.py. Joins the backend's network so the test run can reach them.
+x-showroom-db: &showroom-db
+  image: postgres:16-alpine
+  environment:
+    POSTGRES_USER: saas_admin
+    POSTGRES_PASSWORD: saas-admin-test-only
+    POSTGRES_DB: showroom_test
+  tmpfs:
+    - /var/lib/postgresql/data
+  networks:
+    - backend
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U saas_admin -d showroom_test"]
+    interval: 3s
+    timeout: 3s
+    retries: 20
+
+services:
+  saas-tenant-a:
+    <<: *showroom-db
+    container_name: saas-tenant-a
+    volumes:
+      - ./.saas-test-certs:/certs:ro
+    # Bind-mounted keys can have open permissions, which PostgreSQL refuses: copy and restrict.
+    entrypoint: >
+      sh -c "cp /certs/saas-tenant-a.key /tmp/server.key && chown postgres /tmp/server.key && chmod 600 /tmp/server.key
+      && exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/certs/saas-tenant-a.crt -c ssl_key_file=/tmp/server.key"
+  saas-tenant-b:
+    <<: *showroom-db
+    container_name: saas-tenant-b
+    volumes:
+      - ./.saas-test-certs:/certs:ro
+    entrypoint: >
+      sh -c "cp /certs/saas-tenant-b.key /tmp/server.key && chown postgres /tmp/server.key && chmod 600 /tmp/server.key
+      && exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/certs/saas-tenant-b.crt -c ssl_key_file=/tmp/server.key"
+
+networks:
+  backend:
+    external: true
+    name: backend_default

@@ -81,6 +81,24 @@ class Settings(BaseSettings):
     SAAS_DEFAULT_PLAN_AMOUNT: Decimal = Decimal("0.00")  # set when pricing is decided; billing is a later phase
     SAAS_DEFAULT_CURRENCY: str = "INR"
 
+    # Showroom database credentials. "local" is encrypted files for development and tests only.
+    SECRETS_BACKEND: str = "local"
+    SECRETS_LOCAL_DIR: str = ".secrets"
+    SECRETS_MASTER_KEY: str = ""  # Fernet key
+
+    # Showroom database connections
+    TENANT_DB_ALLOW_PRIVATE_HOSTS: bool = False  # development and tests only; refused in production
+    TENANT_DB_POOL_SIZE: int = 2
+    TENANT_DB_MAX_OVERFLOW: int = 2
+    TENANT_DB_POOL_TIMEOUT: int = 10
+    TENANT_DB_POOL_RECYCLE: int = 300
+    TENANT_DB_CONNECT_TIMEOUT: int = 5
+    TENANT_DB_COMMAND_TIMEOUT: int = 30
+    TENANT_DB_ENGINE_TTL: int = 900
+    TENANT_DB_MAX_ENGINES: int = 50
+    TENANT_DB_MAX_CONCURRENT_SESSIONS: int = 100
+    TENANT_DB_SCHEDULER_CONCURRENCY: int = 5
+
     # Storage Paths
     UPLOAD_DIR: str = "uploads"
     PDF_STORAGE_DIR: str = "generated_pdfs"
@@ -95,6 +113,15 @@ class Settings(BaseSettings):
                 )
         elif not secret:
             self.JWT_SECRET_KEY = DEV_FALLBACK_JWT_SECRET
+        return self
+
+    @model_validator(mode="after")
+    def enforce_tenant_security(self) -> "Settings":
+        if self.APP_ENV.lower() == "production" and self.MULTI_TENANT_ENABLED:
+            if self.TENANT_DB_ALLOW_PRIVATE_HOSTS:
+                raise ValueError("TENANT_DB_ALLOW_PRIVATE_HOSTS cannot be enabled when APP_ENV=production.")
+            if self.SECRETS_BACKEND == "local":
+                raise ValueError("A real secrets manager is required when APP_ENV=production.")
         return self
 
 

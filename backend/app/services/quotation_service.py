@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.exceptions import BadRequestException, ConflictException, NotFoundException
 from app.models.quotation import Quotation, QuotationItem
 from app.repositories.quotation_repository import QuotationRepository
@@ -239,6 +240,7 @@ class QuotationService:
                 quantity=1,
                 total_price=opt_a["final_price"],
                 details_json=opt_a["snapshot"],
+                **self._typed_option_fields(opt_a),
             )
             item_b = QuotationItem(
                 item_name=f"Option B: {opt_b['full_name']}",
@@ -247,6 +249,7 @@ class QuotationService:
                 quantity=1,
                 total_price=opt_b["final_price"],
                 details_json=opt_b["snapshot"],
+                **self._typed_option_fields(opt_b),
             )
             quotation_items.extend([item_a, item_b])
 
@@ -327,7 +330,9 @@ class QuotationService:
         }
 
         try:
-            pdf_path = self.pdf_service.generate_quotation_pdf(pdf_data)
+            # Multi-tenant mode renders on demand: customer details never rest on VoiceQuote's disk.
+            if not settings.MULTI_TENANT_ENABLED:
+                self.pdf_service.generate_quotation_pdf(pdf_data)
             created_quotation.pdf_url = f"/api/v1/quotations/{created_quotation.id}/pdf"
             await self.quote_repo.update(created_quotation)
         except Exception as e:
@@ -352,6 +357,73 @@ class QuotationService:
         )
 
         return await self.quote_repo.get_by_id(created_quotation.id), False  # type: ignore
+
+    @staticmethod
+    def _typed_option_fields(opt: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "vehicle_id": opt["variant"].id,
+            "model_name_snapshot": opt["snapshot"]["model_name"] or None,
+            "variant_snapshot": opt["variant"].name,
+            "ex_showroom": opt["base_price"],
+            "rto": opt["rto"],
+            "insurance": opt["insurance"],
+            "accessories": opt["accessories_total"],
+            "other_charges": Decimal("0.00"),
+            "discount": opt["discount_amount"],
+            "total": opt["final_price"],
+        }
+
+    @staticmethod
+    def pdf_data_from_quote(quote: Quotation) -> Dict[str, Any]:
+        """Rebuild the PDF input from stored figures; nothing is recalculated."""
+        options = [it.details_json or {} for it in quote.items if it.item_type == "VEHICLE_OPTION"]
+        items = [
+            {
+                "item_name": it.item_name,
+                "item_type": it.item_type,
+                "unit_price": f"{it.unit_price:.2f}",
+                "quantity": it.quantity,
+                "total_price": f"{it.total_price:.2f}",
+            }
+            for it in quote.items
+            if it.item_type != "VEHICLE_OPTION"
+        ]
+        customer, executive, variant = quote.customer, quote.sales_executive, quote.variant
+        return {
+            "quotation_number": quote.quotation_number,
+            "date": quote.created_at.strftime("%d-%b-%Y"),
+            "valid_until": quote.expires_at.strftime("%d-%b-%Y") if quote.expires_at else "",
+            "status": quote.status,
+            "customer": {
+                "full_name": customer.full_name,
+                "phone": customer.phone,
+                "email": customer.email or "",
+                "city": customer.city or "",
+                "address": customer.address or "",
+            },
+            "sales_executive": {
+                "full_name": executive.full_name,
+                "email": executive.email,
+                "phone": executive.phone or "",
+            },
+            "variant": {
+                "name": variant.name,
+                "engine_cc": variant.engine_cc or "",
+                "fuel_type": variant.fuel_type,
+                "transmission": variant.transmission,
+            },
+            "base_price": f"{quote.base_price:.2f}",
+            "insurance": f"{quote.insurance:.2f}",
+            "rto": f"{quote.rto:.2f}",
+            "accessories": f"{quote.accessories:.2f}",
+            "discount": f"{quote.discount:.2f}",
+            "offer_title": quote.offer.title if quote.offer else "",
+            "final_price": f"{quote.final_price:.2f}",
+            "payment_mode": quote.payment_mode,
+            "items": items,
+            "options": options,
+            "is_comparison": len(options) >= 2,
+        }
 
     @staticmethod
     def _replay(existing: Quotation, req: QuotationCreate, sales_executive_id: int) -> Quotation:

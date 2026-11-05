@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional, List, TYPE_CHECKING
-from sqlalchemy import CheckConstraint, String, DateTime, ForeignKey, Integer, Numeric, JSON
+from sqlalchemy import CheckConstraint, String, DateTime, ForeignKey, Integer, Numeric, JSON, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base
@@ -74,5 +74,17 @@ class QuotationItem(Base):
     quantity: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     total_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     details_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # Typed snapshot of a VEHICLE_OPTION item; each option is priced independently.
+    vehicle_id: Mapped[Optional[int]] = mapped_column(ForeignKey("vehicle_variants.id", ondelete="SET NULL"), nullable=True)
+    model_name_snapshot: Mapped[Optional[str]] = mapped_column(String(150), nullable=True)
+    variant_snapshot: Mapped[Optional[str]] = mapped_column(String(150), nullable=True)
+    ex_showroom: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2), nullable=True)
+    rto: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2), nullable=True)
+    insurance: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2), nullable=True)
+    accessories: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2), nullable=True)
+    other_charges: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2), nullable=True)
+    discount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2), nullable=True)
+    total: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     quotation: Mapped["Quotation"] = relationship("Quotation", back_populates="items")

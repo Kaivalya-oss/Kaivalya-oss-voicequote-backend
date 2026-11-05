@@ -64,6 +64,11 @@ async def run_async_migrations() -> None:
 
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode."""
+    # Showroom provisioning passes its own secured connection inside one transaction.
+    connection = config.attributes.get("connection")
+    if connection is not None:
+        do_run_migrations(connection)
+        return
     asyncio.run(run_async_migrations())
 
 

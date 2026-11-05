@@ -22,6 +22,8 @@ from app.core.logging import logger
 from app.models.notification import Notification
 from app.repositories.audit_log_repository import AuditLogRepository
 from app.repositories.quotation_repository import QuotationRepository
+from app.services.pdf_service import PDFService
+from app.services.quotation_service import QuotationService
 
 
 def email_configured() -> bool:
@@ -46,10 +48,20 @@ class EmailService:
         self.quote_repo = QuotationRepository(session)
         self.audit_repo = AuditLogRepository(session)
 
+    @staticmethod
+    def _quotation_pdf(quote) -> Optional[bytes]:
+        if settings.MULTI_TENANT_ENABLED:
+            return PDFService().render_quotation_pdf(QuotationService.pdf_data_from_quote(quote))
+        path = os.path.join(settings.PDF_STORAGE_DIR, f"{quote.quotation_number}.pdf")
+        if not os.path.exists(path):
+            return None
+        with open(path, "rb") as fh:
+            return fh.read()
+
     def _sender(self) -> str:
         return formataddr((settings.SMTP_FROM_NAME, settings.SMTP_USER))
 
-    def _customer_message(self, quote, to_email: str, pdf_path: Optional[str]) -> EmailMessage:
+    def _customer_message(self, quote, to_email: str, pdf: Optional[bytes]) -> EmailMessage:
         customer = quote.customer
         exec_name = quote.sales_executive.full_name if quote.sales_executive else "our sales team"
         vehicle_options = [it for it in (quote.items or []) if it.item_type == "VEHICLE_OPTION"]
@@ -94,12 +106,11 @@ class EmailService:
             msg["From"] = self._sender()
             msg["To"] = to_email
             msg.set_content("\n".join(lines))
-            if pdf_path:
-                with open(pdf_path, "rb") as fh:
-                    msg.add_attachment(
-                        fh.read(), maintype="application", subtype="pdf",
-                        filename=f"{quote.quotation_number}.pdf",
-                    )
+            if pdf:
+                msg.add_attachment(
+                    pdf, maintype="application", subtype="pdf",
+                    filename=f"{quote.quotation_number}.pdf",
+                )
             return msg
 
         variant = quote.variant
@@ -128,12 +139,11 @@ class EmailService:
         msg["From"] = self._sender()
         msg["To"] = to_email
         msg.set_content("\n".join(lines))
-        if pdf_path:
-            with open(pdf_path, "rb") as fh:
-                msg.add_attachment(
-                    fh.read(), maintype="application", subtype="pdf",
-                    filename=f"{quote.quotation_number}.pdf",
-                )
+        if pdf:
+            msg.add_attachment(
+                pdf, maintype="application", subtype="pdf",
+                filename=f"{quote.quotation_number}.pdf",
+            )
         return msg
 
     def _admin_message(self, quote, to_email: str, sent_by: str) -> EmailMessage:
@@ -189,9 +199,7 @@ class EmailService:
                 "This customer has no email address. Add one to the customer or enter it before sending.",
             )
 
-        pdf_path = os.path.join(settings.PDF_STORAGE_DIR, f"{quote.quotation_number}.pdf")
-        if not os.path.exists(pdf_path):
-            pdf_path = None
+        pdf = self._quotation_pdf(quote)
 
         if not email_configured():
             await self.audit_repo.log_action(
@@ -202,14 +210,14 @@ class EmailService:
                 "success": False, "delivered": False, "simulated": True,
                 "status": "SIMULATED", "recipient": recipient,
                 "quotation_number": quote.quotation_number, "quotation_status": quote.status,
-                "admin_notified": False, "attachment": bool(pdf_path),
+                "admin_notified": False, "attachment": bool(pdf),
                 "note": "Email is not configured on the server (SMTP_USER / SMTP_PASSWORD); nothing was sent.",
             }
 
         try:
-            await asyncio.to_thread(_send_smtp, self._customer_message(quote, recipient, pdf_path))
+            await asyncio.to_thread(_send_smtp, self._customer_message(quote, recipient, pdf))
         except (smtplib.SMTPException, OSError) as e:
-            logger.error(f"Quotation email to {recipient} failed: {type(e).__name__}")
+            logger.error(f"Quotation {quote.quotation_number} email failed: {type(e).__name__}")
             raise AppException(
                 code="EMAIL_SEND_FAILED",
                 message="The email could not be sent. Check the SMTP settings and try again.",
@@ -243,5 +251,5 @@ class EmailService:
             "success": True, "delivered": True, "simulated": False,
             "status": "SENT", "recipient": recipient,
             "quotation_number": quote.quotation_number, "quotation_status": quote.status,
-            "admin_notified": admin_notified, "attachment": bool(pdf_path),
+            "admin_notified": admin_notified, "attachment": bool(pdf),
         }

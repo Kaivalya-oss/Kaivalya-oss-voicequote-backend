@@ -34,6 +34,12 @@ async def lifespan(app: FastAPI):
     # --- Shutdown ---
     logger.info("Shutting down application...")
     shutdown_scheduler()
+    if settings.MULTI_TENANT_ENABLED:
+        from app.database.connection_manager import connection_manager
+        from app.database.control_plane import dispose_control_engine
+
+        await connection_manager.dispose_all()
+        await dispose_control_engine()
     await engine.dispose()
     logger.info("Database connection pool cleanly closed.")
 

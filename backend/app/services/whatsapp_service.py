@@ -101,7 +101,7 @@ class MetaCloudWhatsAppProvider(BaseWhatsAppProvider):
                 res = await client.post(self.base_url, headers=headers, json=payload)
                 res.raise_for_status()
                 data = res.json()
-                logger.info(f"WhatsApp Cloud API message sent to {clean_phone}: {data}")
+                logger.info(f"WhatsApp Cloud API message sent for {quotation_number}")
                 return {
                     "provider": "MetaCloudAPI",
                     "status": "SENT",
@@ -109,7 +109,7 @@ class MetaCloudWhatsAppProvider(BaseWhatsAppProvider):
                     "details": data,
                 }
         except Exception as e:
-            logger.error(f"WhatsApp Cloud API error: {str(e)}")
+            logger.error(f"WhatsApp Cloud API error for {quotation_number}: {type(e).__name__}")
             raise BadRequestException("WHATSAPP_API_FAILURE", f"Failed to send WhatsApp message via Meta Cloud: {str(e)}")
 
 
@@ -130,15 +130,7 @@ class MockWhatsAppProvider(BaseWhatsAppProvider):
         clean_phone = "".join(filter(str.isdigit, to_phone))
         simulated_msg_id = f"mock_wamid_{quotation_number}_{int(datetime.now(timezone.utc).timestamp())}"
         
-        display_vehicle = f"{options[0]['name']} vs {options[1]['name']}" if (options and len(options) >= 2) else vehicle_name
-        display_price = f"Rs. {options[0]['final_price']:,.2f} vs Rs. {options[1]['final_price']:,.2f}" if (options and len(options) >= 2) else f"Rs. {final_price:,.2f}"
-
-        logger.info(
-            f"[MOCK WHATSAPP DISPATCH] To: {clean_phone} | Customer: {customer_name} | "
-            f"Quote: {quotation_number} | Vehicle: {display_vehicle} | Price: {display_price} | "
-            f"Payment: {payment_mode} | "
-            f"Attachment: {pdf_path}"
-        )
+        logger.info(f"[MOCK WHATSAPP DISPATCH] Quote: {quotation_number} | Payment: {payment_mode}")
         return {
             "provider": "MockDevelopmentProvider",
             "status": "MOCK_SENT",
@@ -178,9 +170,11 @@ class WhatsAppService:
         if not customer or not customer.phone:
             raise BadRequestException("NO_PHONE_NUMBER", "Customer has no registered phone number for WhatsApp.")
 
-        pdf_path = os.path.join(settings.PDF_STORAGE_DIR, f"{quote.quotation_number}.pdf")
-        if not os.path.exists(pdf_path):
-            pdf_path = None
+        pdf_path = None
+        if not settings.MULTI_TENANT_ENABLED:  # no customer files on VoiceQuote's disk
+            pdf_path = os.path.join(settings.PDF_STORAGE_DIR, f"{quote.quotation_number}.pdf")
+            if not os.path.exists(pdf_path):
+                pdf_path = None
 
         vehicle_options = [it for it in (quote.items or []) if it.item_type == "VEHICLE_OPTION"]
         options_data = None

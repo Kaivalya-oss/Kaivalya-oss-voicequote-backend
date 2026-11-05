@@ -1,7 +1,8 @@
 import os
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Dict, List, Optional
+from io import BytesIO
+from typing import BinaryIO, Optional, Any, Dict, List, Optional
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -14,16 +15,24 @@ from app.core.logging import logger
 class PDFService:
     def __init__(self):
         self.output_dir = os.path.abspath(settings.PDF_STORAGE_DIR)
-        os.makedirs(self.output_dir, exist_ok=True)
+        if not settings.MULTI_TENANT_ENABLED:
+            os.makedirs(self.output_dir, exist_ok=True)
 
-    def generate_quotation_pdf(self, quote_data: Dict[str, Any]) -> str:
+    def render_quotation_pdf(self, quote_data: Dict[str, Any]) -> bytes:
+        """Build the PDF in memory, without writing customer details to disk."""
+        buffer = BytesIO()
+        self.generate_quotation_pdf(quote_data, target=buffer)
+        return buffer.getvalue()
+
+    def generate_quotation_pdf(self, quote_data: Dict[str, Any], target: Optional[BinaryIO] = None) -> str:
         """
-        Generate a professional vehicle quotation PDF and return the absolute file path.
+        Generate a professional vehicle quotation PDF and return the absolute file path,
+        or write it to `target` when one is given.
         Supports both single-vehicle and multiple vehicle comparison quotations.
         """
         quotation_number = quote_data["quotation_number"]
         filename = f"{quotation_number}.pdf"
-        filepath = os.path.join(self.output_dir, filename)
+        filepath = target if target is not None else os.path.join(self.output_dir, filename)
 
         doc = SimpleDocTemplate(
             filepath,

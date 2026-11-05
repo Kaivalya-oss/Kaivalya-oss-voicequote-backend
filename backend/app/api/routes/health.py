@@ -1,9 +1,9 @@
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.database.dependencies import get_db
+from app.database.session import AsyncSessionLocal
 
 router = APIRouter(tags=["Health"])
 
@@ -17,8 +17,20 @@ async def health_check():
     }
 
 
+async def _health_session(request: Request):
+    # Multi-tenant mode has no business database of its own: check the control plane, unauthenticated.
+    if settings.MULTI_TENANT_ENABLED:
+        from app.database.control_plane import control_sessionmaker
+
+        async with control_sessionmaker()() as session:
+            yield session
+    else:
+        async with AsyncSessionLocal() as session:
+            yield session
+
+
 @router.get("/health/db", summary="PostgreSQL database health check")
-async def db_health_check(db: AsyncSession = Depends(get_db)):
+async def db_health_check(db: AsyncSession = Depends(_health_session)):
     try:
         result = await db.execute(text("SELECT 1;"))
         scalar = result.scalar()
@@ -33,5 +45,5 @@ async def db_health_check(db: AsyncSession = Depends(get_db)):
         return {
             "status": "unhealthy",
             "database": "error",
-            "details": str(exc),
+            "details": type(exc).__name__,
         }

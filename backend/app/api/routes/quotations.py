@@ -146,6 +146,10 @@ async def get_quotation_pdf(
     quote = await service.get_quotation(id)
     ensure_can_view_quotation(current_user, quote)
     pdf_filename = f"{quote.quotation_number}.pdf"
+    if settings.MULTI_TENANT_ENABLED:
+        pdf = PDFService().render_quotation_pdf(QuotationService.pdf_data_from_quote(quote))
+        return Response(content=pdf, media_type="application/pdf",
+                        headers={"Content-Disposition": f'attachment; filename="{pdf_filename}"'})
     pdf_path = os.path.join(settings.PDF_STORAGE_DIR, pdf_filename)
 
     if not os.path.exists(pdf_path):
