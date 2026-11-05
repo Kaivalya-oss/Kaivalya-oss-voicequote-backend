@@ -122,6 +122,16 @@ def start_scheduler():
             replace_existing=True,
             next_run_time=datetime.now(timezone.utc),
         )
+        if settings.MULTI_TENANT_ENABLED:
+            from app.database.connection_manager import connection_manager
+
+            scheduler.add_job(
+                connection_manager.dispose_idle,
+                "interval",
+                minutes=5,
+                id="dispose_idle_tenant_connections",
+                replace_existing=True,
+            )
         try:
             scheduler.start()
             logger.info("APScheduler background scheduler started.")

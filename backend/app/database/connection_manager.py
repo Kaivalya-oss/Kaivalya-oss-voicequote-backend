@@ -32,6 +32,7 @@ class _Entry:
     sessions: async_sessionmaker[AsyncSession]
     secret_reference: str
     created_at: float
+    last_used: float = 0.0
 
 
 def build_engine(creds: TenantDbCredentials, pool_size: int | None = None) -> AsyncEngine:
@@ -127,6 +128,7 @@ class TenantConnectionManager:
             raise TenantDatabaseError("TENANT_DB_BUSY")
         try:
             entry = await self._entry(tenant_id, secret_reference)
+            entry.last_used = time.monotonic()
             async with entry.sessions() as session:
                 try:
                     # Connect now, so an unavailable database gives one clear, safe error
@@ -143,6 +145,14 @@ class TenantConnectionManager:
                 yield session
         finally:
             limit.release()
+
+    async def dispose_idle(self) -> int:
+        """Release connections of showrooms that have gone quiet, so they stay free on small plans."""
+        cutoff = time.monotonic() - settings.TENANT_DB_IDLE_SECONDS
+        idle = [t for t, e in self._entries.items() if e.last_used <= cutoff and e.engine.pool.checkedout() == 0]
+        for tenant_id in idle:
+            await self._retire(tenant_id)
+        return len(idle)
 
     async def disconnect(self, tenant_id: uuid.UUID) -> None:
         """Drop this tenant's connections after revocation or rotation. Others are untouched."""

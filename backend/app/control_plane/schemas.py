@@ -3,7 +3,9 @@ import uuid
 from datetime import datetime
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, computed_field, field_validator
+
+from app.database.tenant_connection import CONNECTION_ERROR_MESSAGES
 
 TenantRoleName = Literal["OWNER", "HEAD_OF_SALES", "SALESPERSON"]
 SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -132,6 +134,11 @@ class ConnectionDetails(BaseModel):
     schema_version: Optional[str] = None
     last_health_check: Optional[datetime] = None
     last_error_code: Optional[str] = None
+
+    @computed_field
+    @property
+    def last_error_message(self) -> Optional[str]:
+        return CONNECTION_ERROR_MESSAGES.get(self.last_error_code) if self.last_error_code else None
 
 
 class SetupStatusResponse(BaseModel):

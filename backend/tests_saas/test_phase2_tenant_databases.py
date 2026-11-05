@@ -143,6 +143,7 @@ async def test_failed_validation_leaves_showroom_inactive_and_stores_nothing(cli
     d = (await client.get(STATUS, headers=H(token))).json()["data"]
     assert d["operational"] is False and d["tenant_status"] == "PENDING_SETUP"
     assert d["connection_status"] == "FAILED" and d["connection"]["last_error_code"] == "TENANT_DB_AUTH_FAILED"
+    assert d["connection"]["last_error_message"] == "The database rejected these credentials."
     assert (await connection_row(owner["active_tenant"]["tenant_id"])).secret_reference is None
     assert set(glob.glob(os.path.join(settings.SECRETS_LOCAL_DIR, "*.enc"))) == before
     assert (await client.get("/api/v1/customers", headers=H(token))).status_code == 403
@@ -497,6 +498,36 @@ async def test_engines_are_capped_and_least_recently_used_evicted(client: AsyncC
     assert connection_manager.engine_for(uuid.UUID(a["active_tenant"]["tenant_id"])) is None
     # An evicted showroom simply reconnects.
     assert (await client.get("/api/v1/customers", headers=H(a["access_token"]))).status_code == 200
+
+
+async def test_idle_showroom_connections_are_released(client: AsyncClient, monkeypatch):
+    owner, database = await showroom(client, SERVER_A)
+    other, _ = await showroom(client, SERVER_B)
+    token = owner["access_token"]
+    assert (await client.get("/api/v1/customers", headers=H(token))).status_code == 200
+    assert (await client.get("/api/v1/customers", headers=H(other["access_token"]))).status_code == 200
+    tid = uuid.UUID(owner["active_tenant"]["tenant_id"])
+    other_id = uuid.UUID(other["active_tenant"]["tenant_id"])
+    engine = connection_manager.engine_for(tid)
+    for _ in range(100):
+        if engine.pool.checkedout() == 0:
+            break
+        await asyncio.sleep(0.02)
+
+    # Recently used showrooms keep their pools.
+    assert await connection_manager.dispose_idle() == 0
+    assert connection_manager.engine_for(tid) is engine
+
+    monkeypatch.setattr(settings, "TENANT_DB_IDLE_SECONDS", 0)
+    await asyncio.sleep(0.01)
+    await connection_manager.dispose_idle()
+    assert connection_manager.engine_for(tid) is None and connection_manager.engine_for(other_id) is None
+    conn = await admin_connect(SERVER_A, database)
+    remaining = await conn.fetchval("SELECT count(*) FROM pg_stat_activity WHERE datname = $1 AND usename = $2", database, APP_USER)
+    await conn.close()
+    assert remaining == 0
+    # The next request simply reconnects.
+    assert (await client.get("/api/v1/customers", headers=H(token))).status_code == 200
 
 
 async def test_sessions_released_after_requests_and_errors(client: AsyncClient):

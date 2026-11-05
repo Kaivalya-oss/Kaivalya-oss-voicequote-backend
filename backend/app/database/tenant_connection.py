@@ -18,7 +18,7 @@ HOSTNAME_RE = re.compile(r"^(?=.{1,253}$)[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(
 # Carrier-grade NAT is not flagged as private by every Python version.
 _BLOCKED_NETWORKS = (ipaddress.ip_network("100.64.0.0/10"),)
 
-_MESSAGES = {
+CONNECTION_ERROR_MESSAGES = {
     "TENANT_DB_HOST_NOT_ALLOWED": "This database host is not allowed. Use the public address of a managed PostgreSQL service.",
     "TENANT_DB_HOST_UNRESOLVED": "This database host could not be found. Check the host name.",
     "TENANT_DB_UNREACHABLE": "Could not reach the database. Check the host and port, and that it accepts connections from VoiceQuote.",
@@ -46,7 +46,7 @@ class TenantDatabaseError(AppException):
     """Carries only a stable code and fixed message, never driver text that could echo credentials."""
 
     def __init__(self, code: str):
-        super().__init__(code, _MESSAGES[code], _STATUS.get(code, 422))
+        super().__init__(code, CONNECTION_ERROR_MESSAGES[code], _STATUS.get(code, 422))
 
 
 @dataclass(frozen=True)
