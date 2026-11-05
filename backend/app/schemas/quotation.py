@@ -1,6 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field, field_validator
 
 from app.schemas.customer import CustomerResponse
@@ -34,6 +34,7 @@ class QuotationItemResponse(BaseModel):
     unit_price: Decimal
     quantity: int
     total_price: Decimal
+    details_json: Optional[Dict[str, Any]] = None
 
     class Config:
         from_attributes = True
@@ -52,6 +53,9 @@ class QuotationCreate(BaseModel):
         description="Annual interest rate in percent (0-36)",
     )
     notes: Optional[str] = None
+    # For multiple vehicle comparison within one quotation:
+    compare_variant_id: Optional[int] = Field(None, description="Optional second vehicle variant ID for side-by-side comparison")
+    compare_offer_id: Optional[int] = Field(None, description="Optional applicable promotional offer ID for the second vehicle")
 
     @field_validator("accessory_ids")
     @classmethod

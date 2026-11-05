@@ -1,6 +1,6 @@
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,6 +40,151 @@ class QuotationService:
         self.audit_repo = AuditLogRepository(session)
         self.pdf_service = PDFService()
 
+    async def _calculate_option(
+        self,
+        variant_id: int,
+        offer_id: Optional[int],
+        accessory_ids: Optional[List[int]],
+        custom_items: Optional[List[Any]],
+        down_payment: Decimal,
+        loan_tenure: int,
+        interest_rate: Decimal,
+        option_label: str = "A",
+    ) -> Dict[str, Any]:
+        variant = await self.vehicle_repo.get_variant_by_id(variant_id)
+        if not variant:
+            raise NotFoundException("VehicleVariant", variant_id)
+
+        if variant.status != "ACTIVE":
+            raise BadRequestException(
+                "VARIANT_INACTIVE",
+                f"Vehicle variant '{variant.name}' is discontinued and cannot be quoted.",
+            )
+
+        base_price = variant.ex_showroom_price
+        insurance = variant.insurance_price
+        rto = variant.rto_price
+
+        accessories_total = Decimal("0.00")
+        items_breakdown = []
+        accessories = []
+
+        if accessory_ids:
+            for acc_id in accessory_ids:
+                acc = await self.vehicle_repo.get_accessory_by_id(acc_id)
+                if not acc:
+                    raise NotFoundException("Accessory", acc_id)
+                if not acc.is_active:
+                    raise BadRequestException("ACCESSORY_INACTIVE", f"Accessory '{acc.name}' is no longer available.")
+                accessories.append(acc)
+                accessories_total += acc.price
+                items_breakdown.append({
+                    "item_name": acc.name,
+                    "item_type": "ACCESSORY",
+                    "unit_price": f"{acc.price:.2f}",
+                    "quantity": 1,
+                    "total_price": f"{acc.price:.2f}",
+                })
+
+        if custom_items:
+            for custom_item in custom_items:
+                tot = (custom_item.unit_price * Decimal(custom_item.quantity)).quantize(Decimal("0.01"))
+                accessories_total += tot
+                items_breakdown.append({
+                    "item_name": custom_item.item_name.strip(),
+                    "item_type": custom_item.item_type,
+                    "unit_price": f"{custom_item.unit_price:.2f}",
+                    "quantity": custom_item.quantity,
+                    "total_price": f"{tot:.2f}",
+                })
+
+        discount_amount = Decimal("0.00")
+        offer_title = ""
+        today = date.today()
+
+        if offer_id:
+            offer = await self.offer_repo.get_by_id(offer_id)
+            if not offer:
+                raise NotFoundException("Offer", offer_id)
+
+            if not offer.active:
+                raise BadRequestException("OFFER_INACTIVE", f"Offer '{offer.title}' is not active.")
+            if offer.valid_from > today or offer.valid_until < today:
+                raise BadRequestException("OFFER_EXPIRED", f"Offer '{offer.title}' has expired or is not yet valid.")
+
+            if offer.applicable_variant_id and offer.applicable_variant_id != variant.id:
+                raise BadRequestException("OFFER_NOT_APPLICABLE", f"Offer '{offer.title}' is not applicable to variant '{variant.name}'.")
+            if offer.applicable_model_id and offer.applicable_model_id != variant.model_id:
+                raise BadRequestException("OFFER_NOT_APPLICABLE", "Offer is not applicable to the selected model.")
+
+            offer_title = offer.title
+            if offer.discount_type == "PERCENTAGE":
+                discount_amount = (base_price * (offer.discount_value / Decimal("100.00"))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            else:
+                discount_amount = min(offer.discount_value, base_price)
+
+        final_price = base_price + insurance + rto + accessories_total - discount_amount
+        if final_price < Decimal("0.00"):
+            final_price = Decimal("0.00")
+
+        opt_down = min(down_payment, final_price)
+        loan_amount = (final_price - opt_down).quantize(Decimal("0.01"))
+        emi_amount = Decimal("0.00")
+
+        if loan_amount > Decimal("0.00") and loan_tenure > 0:
+            emi_calc = EMIService.calculate(
+                principal=loan_amount,
+                annual_interest_rate=interest_rate,
+                tenure_months=loan_tenure,
+            )
+            emi_amount = emi_calc.monthly_emi
+
+        brand_name = variant.model.brand.name if variant.model and variant.model.brand else ""
+        model_name = variant.model.name if variant.model else ""
+        full_vehicle_name = f"{brand_name} {model_name} {variant.name}".strip() if (brand_name or model_name) else variant.name
+
+        snapshot = {
+            "option_letter": option_label,
+            "variant_id": variant.id,
+            "variant_name": variant.name,
+            "brand_name": brand_name,
+            "model_name": model_name,
+            "full_name": full_vehicle_name,
+            "engine_cc": variant.engine_cc or "",
+            "fuel_type": variant.fuel_type,
+            "transmission": variant.transmission,
+            "base_price": f"{base_price:.2f}",
+            "insurance": f"{insurance:.2f}",
+            "rto": f"{rto:.2f}",
+            "accessories": f"{accessories_total:.2f}",
+            "discount": f"{discount_amount:.2f}",
+            "offer_title": offer_title,
+            "final_price": f"{final_price:.2f}",
+            "down_payment": f"{opt_down:.2f}",
+            "loan_amount": f"{loan_amount:.2f}",
+            "interest_rate": f"{interest_rate:.2f}",
+            "loan_tenure": loan_tenure,
+            "emi": f"{emi_amount:.2f}",
+            "items": items_breakdown,
+        }
+
+        return {
+            "variant": variant,
+            "base_price": base_price,
+            "insurance": insurance,
+            "rto": rto,
+            "accessories_total": accessories_total,
+            "discount_amount": discount_amount,
+            "offer_title": offer_title,
+            "final_price": final_price,
+            "down_payment": opt_down,
+            "loan_amount": loan_amount,
+            "emi_amount": emi_amount,
+            "full_name": full_vehicle_name,
+            "accessories": accessories,
+            "snapshot": snapshot,
+        }
+
     async def create_quotation(
         self,
         req: QuotationCreate,
@@ -60,31 +205,93 @@ class QuotationService:
         if not customer:
             raise NotFoundException("Customer", req.customer_id)
 
-        # 2. Validate Vehicle Variant
-        variant = await self.vehicle_repo.get_variant_by_id(req.variant_id)
-        if not variant:
-            raise NotFoundException("VehicleVariant", req.variant_id)
+        # 2. Calculate Option A
+        opt_a = await self._calculate_option(
+            variant_id=req.variant_id,
+            offer_id=req.offer_id,
+            accessory_ids=req.accessory_ids,
+            custom_items=req.custom_items,
+            down_payment=req.down_payment,
+            loan_tenure=req.loan_tenure,
+            interest_rate=req.interest_rate,
+            option_label="A",
+        )
 
-        if variant.status != "ACTIVE":
-            raise BadRequestException("VARIANT_INACTIVE", f"Vehicle variant '{variant.name}' is discontinued and cannot be quoted.")
+        if req.down_payment > opt_a["final_price"]:
+            raise BadRequestException(
+                "INVALID_DOWN_PAYMENT",
+                f"Down payment (Rs. {req.down_payment}) cannot exceed final on-road price (Rs. {opt_a['final_price']}).",
+            )
 
-        # 3. Base pricing from database
-        base_price = variant.ex_showroom_price
-        insurance = variant.insurance_price
-        rto = variant.rto_price
+        # 3. Calculate Option B if comparison requested
+        opt_b = None
+        if req.compare_variant_id:
+            if req.compare_variant_id == req.variant_id:
+                raise BadRequestException(
+                    "DUPLICATE_VARIANT_COMPARE",
+                    "Choose two different vehicle variants for comparison.",
+                )
+            opt_b = await self._calculate_option(
+                variant_id=req.compare_variant_id,
+                offer_id=req.compare_offer_id,
+                accessory_ids=req.accessory_ids,
+                custom_items=req.custom_items,
+                down_payment=req.down_payment,
+                loan_tenure=req.loan_tenure,
+                interest_rate=req.interest_rate,
+                option_label="B",
+            )
 
-        # 4. Accessories Calculation
-        accessories_total = Decimal("0.00")
-        quotation_items: List[QuotationItem] = []
+        # 4. Unique Quotation Number & Expiry
+        quotation_number = await self.quote_repo.generate_unique_quotation_number()
+        expires_at = datetime.now(timezone.utc) + timedelta(days=15)
 
-        if req.accessory_ids:
-            for acc_id in req.accessory_ids:
-                acc = await self.vehicle_repo.get_accessory_by_id(acc_id)
-                if not acc:
-                    raise NotFoundException("Accessory", acc_id)
-                if not acc.is_active:
-                    raise BadRequestException("ACCESSORY_INACTIVE", f"Accessory '{acc.name}' is no longer available.")
-                accessories_total += acc.price
+        # The primary quotation record holds Option A's independent figures (never the sum of A + B).
+        quotation = Quotation(
+            quotation_number=quotation_number,
+            customer_id=req.customer_id,
+            sales_executive_id=sales_executive_id,
+            variant_id=req.variant_id,
+            offer_id=req.offer_id,
+            base_price=opt_a["base_price"],
+            insurance=opt_a["insurance"],
+            rto=opt_a["rto"],
+            accessories=opt_a["accessories_total"],
+            discount=opt_a["discount_amount"],
+            final_price=opt_a["final_price"],
+            down_payment=opt_a["down_payment"],
+            loan_amount=opt_a["loan_amount"],
+            interest_rate=req.interest_rate,
+            loan_tenure=req.loan_tenure,
+            emi=opt_a["emi_amount"],
+            status="GENERATED",
+            expires_at=expires_at,
+            idempotency_key=key,
+        )
+
+        # 5. Build Quotation Items (VEHICLE_OPTION items for comparison, plus accessories & custom items)
+        quotation_items = []
+        if opt_b:
+            item_a = QuotationItem(
+                item_name=f"Option A: {opt_a['full_name']}",
+                item_type="VEHICLE_OPTION",
+                unit_price=opt_a["final_price"],
+                quantity=1,
+                total_price=opt_a["final_price"],
+                details_json=opt_a["snapshot"],
+            )
+            item_b = QuotationItem(
+                item_name=f"Option B: {opt_b['full_name']}",
+                item_type="VEHICLE_OPTION",
+                unit_price=opt_b["final_price"],
+                quantity=1,
+                total_price=opt_b["final_price"],
+                details_json=opt_b["snapshot"],
+            )
+            quotation_items.extend([item_a, item_b])
+
+        if opt_a["accessories"]:
+            for acc in opt_a["accessories"]:
                 quotation_items.append(
                     QuotationItem(
                         item_name=acc.name,
@@ -94,97 +301,18 @@ class QuotationService:
                         total_price=acc.price,
                     )
                 )
-
         if req.custom_items:
-            for custom_item in req.custom_items:
-                tot = (custom_item.unit_price * Decimal(custom_item.quantity)).quantize(Decimal("0.01"))
-                accessories_total += tot
+            for ci in req.custom_items:
                 quotation_items.append(
                     QuotationItem(
-                        item_name=custom_item.item_name.strip(),
-                        item_type=custom_item.item_type,
-                        unit_price=custom_item.unit_price,
-                        quantity=custom_item.quantity,
-                        total_price=tot,
+                        item_name=ci.item_name.strip(),
+                        item_type=ci.item_type or "CUSTOM",
+                        unit_price=ci.unit_price,
+                        quantity=ci.quantity or 1,
+                        total_price=ci.unit_price * (ci.quantity or 1),
                     )
                 )
-
-        # 5. Applicable Offers & Discount Calculation
-        discount_amount = Decimal("0.00")
-        offer_title = ""
-        today = date.today()
-
-        if req.offer_id:
-            offer = await self.offer_repo.get_by_id(req.offer_id)
-            if not offer:
-                raise NotFoundException("Offer", req.offer_id)
-
-            # Check Offer Validity
-            if not offer.active:
-                raise BadRequestException("OFFER_INACTIVE", f"Offer '{offer.title}' is not active.")
-            if offer.valid_from > today or offer.valid_until < today:
-                raise BadRequestException("OFFER_EXPIRED", f"Offer '{offer.title}' has expired or is not yet valid.")
-
-            # Check Vehicle Applicability
-            if offer.applicable_variant_id and offer.applicable_variant_id != variant.id:
-                raise BadRequestException("OFFER_NOT_APPLICABLE", "Offer is not applicable to the selected variant.")
-            if offer.applicable_model_id and offer.applicable_model_id != variant.model_id:
-                raise BadRequestException("OFFER_NOT_APPLICABLE", "Offer is not applicable to the selected model.")
-
-            offer_title = offer.title
-            if offer.discount_type == "PERCENTAGE":
-                discount_amount = (base_price * (offer.discount_value / Decimal("100.00"))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-            else:
-                discount_amount = min(offer.discount_value, base_price)
-
-        # 6. Final On-Road Calculation
-        final_price = base_price + insurance + rto + accessories_total - discount_amount
-        if final_price < Decimal("0.00"):
-            final_price = Decimal("0.00")
-
-        # 7. Down Payment & Loan
-        if req.down_payment > final_price:
-            raise BadRequestException("INVALID_DOWN_PAYMENT", f"Down payment (Rs. {req.down_payment}) cannot exceed final on-road price (Rs. {final_price}).")
-
-        loan_amount = (final_price - req.down_payment).quantize(Decimal("0.01"))
-        emi_amount = Decimal("0.00")
-
-        if loan_amount > Decimal("0.00") and req.loan_tenure > 0:
-            emi_calc = EMIService.calculate(
-                principal=loan_amount,
-                annual_interest_rate=req.interest_rate,
-                tenure_months=req.loan_tenure,
-            )
-            emi_amount = emi_calc.monthly_emi
-
-        # 8. Unique Quotation Number & Expiry
-        quotation_number = await self.quote_repo.generate_unique_quotation_number()
-        expires_at = datetime.now(timezone.utc) + timedelta(days=15)
-
-        quotation = Quotation(
-            quotation_number=quotation_number,
-            customer_id=req.customer_id,
-            sales_executive_id=sales_executive_id,
-            variant_id=req.variant_id,
-            offer_id=req.offer_id,
-            base_price=base_price,
-            insurance=insurance,
-            rto=rto,
-            accessories=accessories_total,
-            discount=discount_amount,
-            final_price=final_price,
-            down_payment=req.down_payment,
-            loan_amount=loan_amount,
-            interest_rate=req.interest_rate,
-            loan_tenure=req.loan_tenure,
-            emi=emi_amount,
-            status="GENERATED",
-            expires_at=expires_at,
-            idempotency_key=key,
-        )
-
-        for item in quotation_items:
-            quotation.items.append(item)
+        quotation.items = quotation_items
 
         try:
             created_quotation = await self.quote_repo.create(quotation)
@@ -197,7 +325,11 @@ class QuotationService:
                     return self._replay(existing, req, sales_executive_id), True
             raise
 
-        # 9. Generate PDF
+        # 6. Generate PDF (one document containing both options if comparison)
+        options_list = [opt_a["snapshot"]]
+        if opt_b:
+            options_list.append(opt_b["snapshot"])
+
         pdf_data = {
             "quotation_number": created_quotation.quotation_number,
             "date": created_quotation.created_at.strftime("%d-%b-%Y"),
@@ -216,32 +348,26 @@ class QuotationService:
                 "phone": created_quotation.sales_executive.phone or "",
             },
             "variant": {
-                "name": variant.name,
-                "engine_cc": variant.engine_cc or "",
-                "fuel_type": variant.fuel_type,
-                "transmission": variant.transmission,
+                "name": opt_a["variant"].name,
+                "engine_cc": opt_a["variant"].engine_cc or "",
+                "fuel_type": opt_a["variant"].fuel_type,
+                "transmission": opt_a["variant"].transmission,
             },
-            "base_price": f"{base_price:.2f}",
-            "insurance": f"{insurance:.2f}",
-            "rto": f"{rto:.2f}",
-            "accessories": f"{accessories_total:.2f}",
-            "discount": f"{discount_amount:.2f}",
-            "offer_title": offer_title,
-            "final_price": f"{final_price:.2f}",
-            "down_payment": f"{req.down_payment:.2f}",
-            "loan_amount": f"{loan_amount:.2f}",
+            "base_price": f"{opt_a['base_price']:.2f}",
+            "insurance": f"{opt_a['insurance']:.2f}",
+            "rto": f"{opt_a['rto']:.2f}",
+            "accessories": f"{opt_a['accessories_total']:.2f}",
+            "discount": f"{opt_a['discount_amount']:.2f}",
+            "offer_title": opt_a["offer_title"],
+            "final_price": f"{opt_a['final_price']:.2f}",
+            "down_payment": f"{opt_a['down_payment']:.2f}",
+            "loan_amount": f"{opt_a['loan_amount']:.2f}",
             "interest_rate": f"{req.interest_rate:.2f}",
             "loan_tenure": req.loan_tenure,
-            "emi": f"{emi_amount:.2f}",
-            "items": [
-                {
-                    "item_name": item.item_name,
-                    "quantity": item.quantity,
-                    "unit_price": f"{item.unit_price:.2f}",
-                    "total_price": f"{item.total_price:.2f}",
-                }
-                for item in quotation_items
-            ],
+            "emi": f"{opt_a['emi_amount']:.2f}",
+            "items": opt_a["snapshot"]["items"],
+            "options": options_list,
+            "is_comparison": len(options_list) > 1,
         }
 
         try:
@@ -259,9 +385,10 @@ class QuotationService:
             entity_id=created_quotation.id,
             new_value={
                 "quotation_number": quotation_number,
-                "final_price": str(final_price),
+                "final_price": str(opt_a["final_price"]),
                 "customer_id": req.customer_id,
                 "variant_id": req.variant_id,
+                "compare_variant_id": req.compare_variant_id,
             },
             ip_address=ip_address,
         )

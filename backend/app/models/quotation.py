@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional, List, TYPE_CHECKING
-from sqlalchemy import String, DateTime, ForeignKey, Integer, Numeric
+from sqlalchemy import String, DateTime, ForeignKey, Integer, Numeric, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base
@@ -65,5 +65,6 @@ class QuotationItem(Base):
     unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     total_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    details_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     quotation: Mapped["Quotation"] = relationship("Quotation", back_populates="items")

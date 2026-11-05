@@ -7,6 +7,7 @@
 * Only a real send marks a GENERATED quotation as SENT.
 """
 import asyncio
+from decimal import Decimal
 import os
 import smtplib
 from email.message import EmailMessage
@@ -50,9 +51,68 @@ class EmailService:
 
     def _customer_message(self, quote, to_email: str, pdf_path: Optional[str]) -> EmailMessage:
         customer = quote.customer
+        exec_name = quote.sales_executive.full_name if quote.sales_executive else "our sales team"
+        vehicle_options = [it for it in (quote.items or []) if it.item_type == "VEHICLE_OPTION"]
+
+        if len(vehicle_options) >= 2:
+            snap_a = vehicle_options[0].details_json or {}
+            snap_b = vehicle_options[1].details_json or {}
+            name_a = snap_a.get("variant_name", vehicle_options[0].item_name)
+            name_b = snap_b.get("variant_name", vehicle_options[1].item_name)
+            price_a = Decimal(str(snap_a.get("final_price", vehicle_options[0].total_price)))
+            price_b = Decimal(str(snap_b.get("final_price", vehicle_options[1].total_price)))
+            emi_a = Decimal(str(snap_a.get("emi", 0)))
+            emi_b = Decimal(str(snap_b.get("emi", 0)))
+            tenure_a = snap_a.get("loan_tenure") or quote.loan_tenure
+            tenure_b = snap_b.get("loan_tenure") or quote.loan_tenure
+
+            lines = [
+                f"Dear {customer.full_name},",
+                "",
+                f"Thank you for visiting our showroom! Here is your official vehicle comparison quotation.",
+                "",
+                f"Quotation number: {quote.quotation_number}",
+                "",
+                f"OPTION A — {name_a}:",
+                f"On-road price:    {_money(price_a)}",
+            ]
+            if emi_a > 0:
+                lines.append(f"Monthly EMI:      {_money(emi_a)} x {tenure_a} months")
+            lines += [
+                "",
+                f"OPTION B — {name_b}:",
+                f"On-road price:    {_money(price_b)}",
+            ]
+            if emi_b > 0:
+                lines.append(f"Monthly EMI:      {_money(emi_b)} x {tenure_b} months")
+            if quote.expires_at:
+                lines.append(f"Valid until:      {quote.expires_at:%d %b %Y}")
+            lines += [
+                "",
+                "These vehicles are alternative purchase options for comparison.",
+                "Please find your side-by-side comparison document attached.",
+                "",
+                "Reply to this email or visit the showroom to book your vehicle.",
+                "",
+                "Regards,",
+                exec_name,
+                settings.SMTP_FROM_NAME,
+            ]
+            msg = EmailMessage()
+            msg["Subject"] = f"Your comparison quotation {quote.quotation_number} - {name_a} vs {name_b}"
+            msg["From"] = self._sender()
+            msg["To"] = to_email
+            msg.set_content("\n".join(lines))
+            if pdf_path:
+                with open(pdf_path, "rb") as fh:
+                    msg.add_attachment(
+                        fh.read(), maintype="application", subtype="pdf",
+                        filename=f"{quote.quotation_number}.pdf",
+                    )
+            return msg
+
         variant = quote.variant
         vehicle = variant.name if variant else f"Variant #{quote.variant_id}"
-        exec_name = quote.sales_executive.full_name if quote.sales_executive else "our sales team"
         lines = [
             f"Dear {customer.full_name},",
             "",
@@ -88,6 +148,20 @@ class EmailService:
 
     def _admin_message(self, quote, to_email: str, sent_by: str) -> EmailMessage:
         admin_to = settings.ADMIN_NOTIFY_EMAIL or settings.SMTP_USER
+        vehicle_options = [it for it in (quote.items or []) if it.item_type == "VEHICLE_OPTION"]
+        if len(vehicle_options) >= 2:
+            snap_a = vehicle_options[0].details_json or {}
+            snap_b = vehicle_options[1].details_json or {}
+            name_a = snap_a.get("variant_name", vehicle_options[0].item_name)
+            name_b = snap_b.get("variant_name", vehicle_options[1].item_name)
+            price_a = Decimal(str(snap_a.get("final_price", vehicle_options[0].total_price)))
+            price_b = Decimal(str(snap_b.get("final_price", vehicle_options[1].total_price)))
+            vehicle_info = f"{name_a} vs {name_b} (Comparison)"
+            price_info = f"Option A: {_money(price_a)} / Option B: {_money(price_b)}"
+        else:
+            vehicle_info = quote.variant.name if quote.variant else str(quote.variant_id)
+            price_info = _money(quote.final_price)
+
         msg = EmailMessage()
         msg["Subject"] = f"[VoiceQuote] Quotation {quote.quotation_number} emailed to {quote.customer.full_name}"
         msg["From"] = self._sender()
@@ -99,8 +173,8 @@ class EmailService:
                 f"Quotation:  {quote.quotation_number}",
                 f"Customer:   {quote.customer.full_name} ({quote.customer.phone})",
                 f"Sent to:    {to_email}",
-                f"Vehicle:    {quote.variant.name if quote.variant else quote.variant_id}",
-                f"Price:      {_money(quote.final_price)}",
+                f"Vehicle:    {vehicle_info}",
+                f"Price:      {price_info}",
                 f"Sent by:    {sent_by}",
             ])
         )

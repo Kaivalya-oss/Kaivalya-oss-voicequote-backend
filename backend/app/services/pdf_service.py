@@ -19,6 +19,7 @@ class PDFService:
     def generate_quotation_pdf(self, quote_data: Dict[str, Any]) -> str:
         """
         Generate a professional vehicle quotation PDF and return the absolute file path.
+        Supports both single-vehicle and multiple vehicle comparison quotations.
         """
         quotation_number = quote_data["quotation_number"]
         filename = f"{quotation_number}.pdf"
@@ -34,6 +35,12 @@ class PDFService:
         )
 
         styles = getSampleStyleSheet()
+
+        if quote_data.get("is_comparison") and len(quote_data.get("options", [])) >= 2:
+            story = self._build_comparison_quotation_story(quote_data, styles)
+            doc.build(story)
+            logger.info(f"Generated comparison quotation PDF: {filepath}")
+            return filepath
         
         # Custom Typography Styles
         title_style = ParagraphStyle(
@@ -273,6 +280,195 @@ class PDFService:
         doc.build(story)
         logger.info(f"Generated quotation PDF: {filepath}")
         return filepath
+
+    def _build_comparison_quotation_story(self, quote_data: Dict[str, Any], styles) -> List[Any]:
+        title_style = ParagraphStyle(
+            "DocTitleCmp", parent=styles["Heading1"], fontSize=18, leading=22, textColor=colors.HexColor("#1A365D"), spaceAfter=4
+        )
+        subtitle_style = ParagraphStyle(
+            "DocSubtitleCmp", parent=styles["Normal"], fontSize=9, leading=12, textColor=colors.HexColor("#4A5568")
+        )
+        section_style = ParagraphStyle(
+            "SectionTitleCmp", parent=styles["Heading2"], fontSize=11, leading=14, textColor=colors.HexColor("#2B6CB0"), spaceBefore=8, spaceAfter=4
+        )
+        cell_style = ParagraphStyle(
+            "CellNormalCmp", parent=styles["Normal"], fontSize=8.5, leading=11, textColor=colors.HexColor("#2D3748")
+        )
+        cell_bold = ParagraphStyle(
+            "CellBoldCmp", parent=styles["Normal"], fontSize=8.5, leading=11, fontName="Helvetica-Bold", textColor=colors.HexColor("#1A202C")
+        )
+        cell_head = ParagraphStyle(
+            "CellHeadCmp", parent=cell_bold, textColor=colors.whitesmoke
+        )
+
+        story = []
+        quotation_number = quote_data["quotation_number"]
+        cust = quote_data.get("customer", {})
+        rep = quote_data.get("sales_executive", {})
+        options = quote_data.get("options", [])
+        opt_a = options[0]
+        opt_b = options[1]
+
+        # 1. Header Banner Table
+        header_text = [
+            Paragraph("<b>NAVKAR TWO-WHEELER SHOWROOM</b>", title_style),
+            Paragraph("Official Authorized Dealership — Vehicle Comparison Quotation", subtitle_style),
+            Paragraph("100 Feet Ring Road, Tech Corridor | Contact: +91 98765 43210 | info@dealership.com", subtitle_style),
+        ]
+        quote_meta = [
+            Paragraph(f"<b>QUOTATION NO:</b> {quotation_number}", cell_bold),
+            Paragraph(f"<b>Date:</b> {quote_data.get('date', datetime.now().strftime('%d-%b-%Y'))}", cell_style),
+            Paragraph(f"<b>Valid Until:</b> {quote_data.get('valid_until', '15 Days from Issue')}", cell_style),
+            Paragraph(f"<b>Status:</b> {quote_data.get('status', 'GENERATED')}", cell_bold),
+        ]
+
+        header_table = Table([[header_text, quote_meta]], colWidths=[360, 180])
+        header_table.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ]))
+        story.append(header_table)
+        story.append(Spacer(1, 6))
+
+        # 2. Customer & Sales Rep Info
+        cust_info = [
+            Paragraph("<b>CUSTOMER DETAILS</b>", section_style),
+            Paragraph(f"<b>Name:</b> {cust.get('full_name', 'N/A')}", cell_style),
+            Paragraph(f"<b>Phone:</b> {cust.get('phone', 'N/A')}", cell_style),
+            Paragraph(f"<b>Email:</b> {cust.get('email', 'N/A')}", cell_style),
+            Paragraph(f"<b>City/Address:</b> {cust.get('city', '')} {cust.get('address', '')}", cell_style),
+        ]
+        rep_info = [
+            Paragraph("<b>SALES EXECUTIVE</b>", section_style),
+            Paragraph(f"<b>Name:</b> {rep.get('full_name', 'N/A')}", cell_style),
+            Paragraph(f"<b>Email:</b> {rep.get('email', 'N/A')}", cell_style),
+            Paragraph(f"<b>Phone:</b> {rep.get('phone', 'Showroom Desk')}", cell_style),
+        ]
+
+        info_table = Table([[cust_info, rep_info]], colWidths=[320, 220])
+        info_table.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F7FAFC")),
+            ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
+            ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ("LEFTPADDING", (0, 0), (-1, -1), 8),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ]))
+        story.append(info_table)
+        story.append(Spacer(1, 8))
+
+        # 3. Side-by-Side Comparison Table
+        story.append(Paragraph("<b>VEHICLE COMPARISON OPTIONS</b>", section_style))
+
+        def money(val):
+            return f"Rs. {Decimal(str(val or 0)):,.2f}"
+
+        cmp_rows = [
+            [
+                Paragraph("<b>Component / Spec</b>", cell_head),
+                Paragraph(f"<b>OPTION A</b><br/>{opt_a.get('full_name', 'Vehicle A')}", cell_head),
+                Paragraph(f"<b>OPTION B</b><br/>{opt_b.get('full_name', 'Vehicle B')}", cell_head),
+            ],
+            [
+                Paragraph("Engine & Specs", cell_style),
+                Paragraph(f"{opt_a.get('engine_cc', '-')} CC | {opt_a.get('fuel_type', '')} | {opt_a.get('transmission', '')}", cell_style),
+                Paragraph(f"{opt_b.get('engine_cc', '-')} CC | {opt_b.get('fuel_type', '')} | {opt_b.get('transmission', '')}", cell_style),
+            ],
+            [
+                Paragraph("Ex-Showroom Price", cell_style),
+                Paragraph(money(opt_a.get('base_price')), cell_style),
+                Paragraph(money(opt_b.get('base_price')), cell_style),
+            ],
+            [
+                Paragraph("Comprehensive Insurance", cell_style),
+                Paragraph(money(opt_a.get('insurance')), cell_style),
+                Paragraph(money(opt_b.get('insurance')), cell_style),
+            ],
+            [
+                Paragraph("RTO Registration & Tax", cell_style),
+                Paragraph(money(opt_a.get('rto')), cell_style),
+                Paragraph(money(opt_b.get('rto')), cell_style),
+            ],
+            [
+                Paragraph("Accessories & Items", cell_style),
+                Paragraph(money(opt_a.get('accessories')), cell_style),
+                Paragraph(money(opt_b.get('accessories')), cell_style),
+            ],
+            [
+                Paragraph("Special Offer / Discount", cell_style),
+                Paragraph(f"- {money(opt_a.get('discount'))}" if Decimal(str(opt_a.get('discount', 0))) > 0 else "Rs. 0.00", cell_style),
+                Paragraph(f"- {money(opt_b.get('discount'))}" if Decimal(str(opt_b.get('discount', 0))) > 0 else "Rs. 0.00", cell_style),
+            ],
+            [
+                Paragraph("<b>TOTAL ON-ROAD FINAL PRICE</b>", cell_bold),
+                Paragraph(f"<b>{money(opt_a.get('final_price'))}</b>", cell_bold),
+                Paragraph(f"<b>{money(opt_b.get('final_price'))}</b>", cell_bold),
+            ],
+            [
+                Paragraph("Down Payment", cell_style),
+                Paragraph(money(opt_a.get('down_payment')), cell_style),
+                Paragraph(money(opt_b.get('down_payment')), cell_style),
+            ],
+            [
+                Paragraph("Loan Principal Amount", cell_style),
+                Paragraph(money(opt_a.get('loan_amount')), cell_style),
+                Paragraph(money(opt_b.get('loan_amount')), cell_style),
+            ],
+            [
+                Paragraph("Tenure & Interest Rate", cell_style),
+                Paragraph(f"{opt_a.get('loan_tenure', 0)} Mos @ {opt_a.get('interest_rate', '0.00')}%" if opt_a.get('loan_tenure') else "No loan", cell_style),
+                Paragraph(f"{opt_b.get('loan_tenure', 0)} Mos @ {opt_b.get('interest_rate', '0.00')}%" if opt_b.get('loan_tenure') else "No loan", cell_style),
+            ],
+            [
+                Paragraph("<b>Estimated Monthly EMI</b>", cell_bold),
+                Paragraph(f"<b>{money(opt_a.get('emi'))} / mo</b>" if Decimal(str(opt_a.get('emi', 0))) > 0 else "—", cell_bold),
+                Paragraph(f"<b>{money(opt_b.get('emi'))} / mo</b>" if Decimal(str(opt_b.get('emi', 0))) > 0 else "—", cell_bold),
+            ],
+        ]
+
+        cmp_table = Table(cmp_rows, colWidths=[160, 190, 190])
+        cmp_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2B6CB0")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E0")),
+            ("BACKGROUND", (0, 7), (-1, 7), colors.HexColor("#EBF8FF")),
+            ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+            ("ALIGN", (0, 0), (0, -1), "LEFT"),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        story.append(cmp_table)
+
+        # Price comparison callout
+        diff = Decimal(str(opt_b.get('final_price', 0))) - Decimal(str(opt_a.get('final_price', 0)))
+        if diff != Decimal("0.00"):
+            cheaper_letter = "A" if diff > Decimal("0") else "B"
+            cheaper_name = opt_a.get('full_name') if diff > Decimal("0") else opt_b.get('full_name')
+            story.append(Spacer(1, 6))
+            diff_text = f"<b>Vehicle Option {cheaper_letter} ({cheaper_name}) is {money(abs(diff))} cheaper on-road.</b>"
+            story.append(Paragraph(diff_text, cell_bold))
+
+        story.append(Spacer(1, 8))
+
+        # Terms & Signatures
+        terms_text = (
+            "<b>Terms & Conditions:</b><br/>"
+            "1. These vehicles are alternative comparison options; final prices are calculated independently for each option.<br/>"
+            "2. Quotation prices are valid for 15 days from the date of issuance.<br/>"
+            "3. Final price at vehicle delivery is subject to statutory RTO and insurance revisions, if any.<br/>"
+            "4. Booking is confirmed only upon receipt of booking deposit and chassis allocation."
+        )
+        story.append(Paragraph(terms_text, subtitle_style))
+        story.append(Spacer(1, 12))
+
+        sig_table = Table(
+            [[Paragraph("Customer Acceptance Signature: __________________", cell_style), Paragraph("Authorized Showroom Signature: __________________", cell_style)]],
+            colWidths=[270, 270],
+        )
+        story.append(sig_table)
+        return story
 
     def generate_comparison_pdf(self, quotes: List[Any]) -> bytes:
         """Side-by-side comparison of 2-3 quotations for one customer, built in memory.
