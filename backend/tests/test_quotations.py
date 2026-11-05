@@ -22,9 +22,7 @@ async def test_quotation_creation_and_pdf_generation(client: AsyncClient, sales_
         "customer_id": customer_id,
         "variant_id": variant_id,
         "accessory_ids": [acc_id],
-        "down_payment": 20000.00,
-        "loan_tenure": 36,
-        "interest_rate": 9.50,
+        "payment_mode": "FINANCE",
     }
 
     # 2. Create Quotation
@@ -36,9 +34,7 @@ async def test_quotation_creation_and_pdf_generation(client: AsyncClient, sales_
 
     assert quotation_number.startswith("QT-")
     assert float(data["final_price"]) > 0
-    assert float(data["down_payment"]) == 20000.00
-    assert float(data["loan_amount"]) == float(data["final_price"]) - 20000.00
-    assert float(data["emi"]) > 0
+    assert data["payment_mode"] == "FINANCE"
     assert data["status"] == "GENERATED"
     assert data["pdf_url"] is not None
 
@@ -56,29 +52,3 @@ async def test_quotation_creation_and_pdf_generation(client: AsyncClient, sales_
     assert wa_data["delivery"]["status"] in ["SENT", "MOCK_SENT"]
     # Only a real provider delivery may report success
     assert wa_data["success"] is (wa_data["delivery"]["status"] == "SENT")
-
-
-@pytest.mark.asyncio
-async def test_quotation_excessive_down_payment(client: AsyncClient, sales_token: str):
-    headers = {"Authorization": f"Bearer {sales_token}"}
-
-    c_res = await client.get("/api/v1/customers", headers=headers)
-    customer_id = c_res.json()["items"][0]["id"]
-
-    v_res = await client.get("/api/v1/vehicles", headers=headers)
-    variant_id = v_res.json()["items"][0]["id"]
-
-    # Down payment 500,000 exceeds vehicle on-road price
-    res = await client.post(
-        "/api/v1/quotations",
-        json={
-            "customer_id": customer_id,
-            "variant_id": variant_id,
-            "down_payment": 500000.00,
-            "loan_tenure": 12,
-            "interest_rate": 10.0,
-        },
-        headers=headers,
-    )
-    assert res.status_code == 400
-    assert res.json()["error"]["code"] == "INVALID_DOWN_PAYMENT"

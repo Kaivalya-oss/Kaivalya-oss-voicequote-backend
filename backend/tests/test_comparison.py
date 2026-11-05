@@ -17,7 +17,7 @@ async def customer(client: AsyncClient, token: str) -> dict:
 
 async def quote(client: AsyncClient, token: str, customer_id: int, variant_id: int) -> dict:
     r = await client.post("/api/v1/quotations", headers=H(token),
-                          json={"customer_id": customer_id, "variant_id": variant_id, "down_payment": 0})
+                          json={"customer_id": customer_id, "variant_id": variant_id})
     assert r.status_code == 201, r.text
     return r.json()["data"]
 
@@ -78,9 +78,7 @@ async def test_single_quotation_multiple_vehicle_comparison(client: AsyncClient,
         "customer_id": c["id"],
         "variant_id": var_a["id"],
         "compare_variant_id": var_b["id"],
-        "down_payment": 20000,
-        "loan_tenure": 36,
-        "interest_rate": 9.5,
+        "payment_mode": "FINANCE",
     }
     res = await client.post("/api/v1/quotations", headers=H(sales_token), json=payload)
     assert res.status_code == 201, res.text

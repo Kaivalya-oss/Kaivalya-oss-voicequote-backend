@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field, field_validator
+from typing import Any, Dict, List, Literal, Optional
+from pydantic import BaseModel, Field, computed_field, field_validator
 
 from app.schemas.customer import CustomerResponse
 from app.schemas.vehicle import VariantResponse
@@ -9,8 +9,10 @@ from app.schemas.offer import OfferResponse
 from app.schemas.auth import UserResponse
 
 
-# Upper bound for a two-wheeler loan's annual interest rate; anything above is a typo.
-MAX_INTEREST_RATE = Decimal("36.00")
+PaymentMode = Literal["CASH", "FINANCE"]
+
+# Older comparison snapshots still contain these keys; they are never returned.
+LEGACY_FINANCE_KEYS = {"down_payment", "loan_amount", "interest_rate", "loan_tenure", "emi"}
 
 
 class QuotationItemCreate(BaseModel):
@@ -36,6 +38,11 @@ class QuotationItemResponse(BaseModel):
     total_price: Decimal
     details_json: Optional[Dict[str, Any]] = None
 
+    @field_validator("details_json")
+    @classmethod
+    def _drop_legacy_finance(cls, v):
+        return {k: val for k, val in v.items() if k not in LEGACY_FINANCE_KEYS} if v else v
+
     class Config:
         from_attributes = True
 
@@ -46,12 +53,7 @@ class QuotationCreate(BaseModel):
     accessory_ids: Optional[List[int]] = Field(default_factory=list, description="IDs of standard accessories from catalog")
     custom_items: Optional[List[QuotationItemCreate]] = Field(default_factory=list, description="Optional custom accessory items")
     offer_id: Optional[int] = Field(None, description="Optional applicable promotional offer ID")
-    down_payment: Decimal = Field(default=Decimal("0.00"), ge=Decimal("0"), example=Decimal("25000.00"))
-    loan_tenure: int = Field(default=36, ge=0, le=120, example=36, description="Tenure in months (0 for full cash payment)")
-    interest_rate: Decimal = Field(
-        default=Decimal("9.50"), ge=Decimal("0"), le=MAX_INTEREST_RATE, example=Decimal("9.50"),
-        description="Annual interest rate in percent (0-36)",
-    )
+    payment_mode: PaymentMode = Field(default="CASH", description="CASH or FINANCE; shared by both options of a comparison")
     notes: Optional[str] = None
     # For multiple vehicle comparison within one quotation:
     compare_variant_id: Optional[int] = Field(None, description="Optional second vehicle variant ID for side-by-side comparison")
@@ -84,14 +86,9 @@ class QuotationResponse(BaseModel):
     rto: Decimal
     accessories: Decimal
     discount: Decimal
+    # Option A only when is_comparison is true; use the VEHICLE_OPTION items for prices.
     final_price: Decimal
-
-    # Finance breakdown
-    down_payment: Decimal
-    loan_amount: Decimal
-    interest_rate: Decimal
-    loan_tenure: int
-    emi: Decimal
+    payment_mode: PaymentMode
 
     status: str
     pdf_url: Optional[str] = None
@@ -104,6 +101,11 @@ class QuotationResponse(BaseModel):
     variant: Optional[VariantResponse] = None
     offer: Optional[OfferResponse] = None
     items: List[QuotationItemResponse] = Field(default_factory=list)
+
+    @computed_field
+    @property
+    def is_comparison(self) -> bool:
+        return sum(1 for it in self.items if it.item_type == "VEHICLE_OPTION") >= 2
 
     class Config:
         from_attributes = True

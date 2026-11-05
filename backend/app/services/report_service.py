@@ -8,7 +8,7 @@ from app.models.quotation import Quotation
 from app.models.lead import Lead
 from app.models.inventory import InventoryUnit
 from app.models.vehicle import VehicleVariant
-from app.schemas.report import InventoryReportItem, LeadReportItem, SalesReportItem
+from app.schemas.report import InventoryReportItem, LeadReportItem, SalesReportItem, VehicleOptionPrice
 
 
 class ReportService:
@@ -28,6 +28,7 @@ class ReportService:
                 selectinload(Quotation.customer),
                 selectinload(Quotation.variant),
                 selectinload(Quotation.sales_executive),
+                selectinload(Quotation.items),
             )
         )
         if from_date:
@@ -38,19 +39,33 @@ class ReportService:
         stmt = stmt.order_by(Quotation.created_at.desc()).limit(limit)
         quotes = (await self.session.execute(stmt)).scalars().all()
 
-        return [
-            SalesReportItem(
-                quotation_id=q.id,
-                quotation_number=q.quotation_number,
-                customer_name=q.customer.full_name,
-                variant_name=q.variant.name,
-                sales_executive_name=q.sales_executive.full_name,
-                final_price=q.final_price,
-                status=q.status,
-                created_at=q.created_at,
+        report = []
+        for q in quotes:
+            options = [
+                VehicleOptionPrice(
+                    vehicle=(it.details_json or {}).get("variant_name", it.item_name),
+                    final_price=it.total_price,
+                )
+                for it in q.items
+                if it.item_type == "VEHICLE_OPTION"
+            ]
+            is_comparison = len(options) >= 2
+            report.append(
+                SalesReportItem(
+                    quotation_id=q.id,
+                    quotation_number=q.quotation_number,
+                    customer_name=q.customer.full_name,
+                    variant_name=" vs ".join(o.vehicle for o in options) if is_comparison else q.variant.name,
+                    sales_executive_name=q.sales_executive.full_name,
+                    final_price=None if is_comparison else q.final_price,
+                    is_comparison=is_comparison,
+                    option_prices=options if is_comparison else [],
+                    payment_mode=q.payment_mode,
+                    status=q.status,
+                    created_at=q.created_at,
+                )
             )
-            for q in quotes
-        ]
+        return report
 
     async def get_leads_report(
         self,

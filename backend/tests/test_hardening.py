@@ -77,7 +77,7 @@ async def test_quotation_pdf_requires_authentication(client: AsyncClient, sales_
     cust = await new_customer(client, sales_token)
     q = (await client.post("/api/v1/quotations", headers=H(sales_token),
                            json={"customer_id": cust["id"], "variant_id": await first_variant_id(client, sales_token),
-                                 "down_payment": 0})).json()["data"]
+                                 })).json()["data"]
     url = f"/api/v1/quotations/{q['id']}/pdf"
 
     assert (await client.get(url)).status_code == 401
@@ -143,7 +143,7 @@ async def test_concurrent_duplicate_customer_create_is_409_not_500(client: Async
 async def test_quotation_idempotency(client: AsyncClient, sales_token: str):
     cust = await new_customer(client, sales_token)
     variant_id = await first_variant_id(client, sales_token)
-    body = {"customer_id": cust["id"], "variant_id": variant_id, "down_payment": 0}
+    body = {"customer_id": cust["id"], "variant_id": variant_id}
 
     async def count() -> int:
         return (await client.get(f"/api/v1/quotations?customer_id={cust['id']}&page_size=1",
@@ -319,7 +319,7 @@ async def test_mock_whatsapp_does_not_mark_sent(client: AsyncClient, sales_token
     cust = await new_customer(client, sales_token)
     q = (await client.post("/api/v1/quotations", headers=H(sales_token),
                            json={"customer_id": cust["id"], "variant_id": await first_variant_id(client, sales_token),
-                                 "down_payment": 0})).json()["data"]
+                                 })).json()["data"]
     res = await client.post(f"/api/v1/quotations/{q['id']}/send-whatsapp", headers=H(sales_token))
     assert res.status_code == 200
     data = res.json()["data"]
@@ -342,7 +342,7 @@ async def test_failed_whatsapp_delivery_changes_nothing(client: AsyncClient, sal
     cust = await new_customer(client, sales_token)
     q = (await client.post("/api/v1/quotations", headers=H(sales_token),
                            json={"customer_id": cust["id"], "variant_id": await first_variant_id(client, sales_token),
-                                 "down_payment": 0})).json()["data"]
+                                 })).json()["data"]
     res = await client.post(f"/api/v1/quotations/{q['id']}/send-whatsapp", headers=H(sales_token))
     assert res.status_code == 400
     after = (await client.get(f"/api/v1/quotations/{q['id']}", headers=H(sales_token))).json()["data"]
@@ -360,7 +360,7 @@ async def test_real_whatsapp_delivery_marks_sent(client: AsyncClient, sales_toke
     cust = await new_customer(client, sales_token)
     q = (await client.post("/api/v1/quotations", headers=H(sales_token),
                            json={"customer_id": cust["id"], "variant_id": await first_variant_id(client, sales_token),
-                                 "down_payment": 0})).json()["data"]
+                                 })).json()["data"]
     res = await client.post(f"/api/v1/quotations/{q['id']}/send-whatsapp", headers=H(sales_token))
     assert res.json()["data"]["delivered"] is True
     after = (await client.get(f"/api/v1/quotations/{q['id']}", headers=H(sales_token))).json()["data"]
@@ -383,7 +383,7 @@ async def test_salesperson_cannot_touch_another_salespersons_records(
                             json={"lead_id": lead["id"], "type": "CALL",
                                   "scheduled_at": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()})).json()["data"]
     q = (await client.post("/api/v1/quotations", headers=H(sales_token),
-                           json={"customer_id": cust["id"], "variant_id": variant_id, "down_payment": 0})).json()["data"]
+                           json={"customer_id": cust["id"], "variant_id": variant_id})).json()["data"]
     vin = f"HO{uuid.uuid4().hex[:12].upper()}"
     unit = (await client.post("/api/v1/inventory", headers=H(inventory_token),
                               json={"variant_id": variant_id, "vin_chassis_number": vin, "engine_number": "E" + vin,
@@ -416,7 +416,7 @@ async def test_salesperson_cannot_touch_another_salespersons_records(
     # but can still quote for the walk-in customer found by phone
     assert (await client.get(f"/api/v1/quotations/{q['id']}/pdf", headers=H(other))).status_code == 404
     assert (await client.post("/api/v1/quotations", headers=H(other),
-                              json={"customer_id": cust["id"], "variant_id": variant_id, "down_payment": 0})).status_code == 201
+                              json={"customer_id": cust["id"], "variant_id": variant_id})).status_code == 201
 
     # The owner (A) and management keep full access
     assert (await client.post(f"/api/v1/followups/{fu['id']}/complete", headers=H(sales_token), json={})).status_code == 200

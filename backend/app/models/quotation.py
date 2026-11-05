@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional, List, TYPE_CHECKING
-from sqlalchemy import String, DateTime, ForeignKey, Integer, Numeric, JSON
+from sqlalchemy import CheckConstraint, String, DateTime, ForeignKey, Integer, Numeric, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base
@@ -16,6 +16,9 @@ if TYPE_CHECKING:
 
 class Quotation(Base, TimestampMixin):
     __tablename__ = "quotations"
+    __table_args__ = (
+        CheckConstraint("payment_mode IN ('CASH', 'FINANCE')", name="ck_quotations_payment_mode"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     quotation_number: Mapped[str] = mapped_column(String(50), unique=True, index=True, nullable=False)
@@ -30,9 +33,14 @@ class Quotation(Base, TimestampMixin):
     rto: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"), nullable=False)
     accessories: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"), nullable=False)
     discount: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"), nullable=False)
+    # For a comparison this holds Option A only, never a payable total for both alternatives.
+    # The VEHICLE_OPTION items are authoritative; check them before displaying or summing this.
     final_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    # One payment mode for the whole quotation, shared by both options of a comparison.
+    payment_mode: Mapped[str] = mapped_column(String(10), default="CASH", server_default="CASH", nullable=False)
 
     # Loan / EMI details
+    # Legacy finance figures: kept for old records, no longer calculated or exposed.
     down_payment: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"), nullable=False)
     loan_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"), nullable=False)
     interest_rate: Mapped[Decimal] = mapped_column(Numeric(5, 2), default=Decimal("0.00"), nullable=False)

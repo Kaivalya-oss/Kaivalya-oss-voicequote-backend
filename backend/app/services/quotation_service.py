@@ -12,7 +12,6 @@ from app.repositories.vehicle_repository import VehicleRepository
 from app.repositories.offer_repository import OfferRepository
 from app.repositories.audit_log_repository import AuditLogRepository
 from app.schemas.quotation import QuotationCreate, QuotationStatusUpdate
-from app.services.emi_service import EMIService
 from app.services.pdf_service import PDFService
 
 
@@ -46,9 +45,6 @@ class QuotationService:
         offer_id: Optional[int],
         accessory_ids: Optional[List[int]],
         custom_items: Optional[List[Any]],
-        down_payment: Decimal,
-        loan_tenure: int,
-        interest_rate: Decimal,
         option_label: str = "A",
     ) -> Dict[str, Any]:
         variant = await self.vehicle_repo.get_variant_by_id(variant_id)
@@ -127,18 +123,6 @@ class QuotationService:
         if final_price < Decimal("0.00"):
             final_price = Decimal("0.00")
 
-        opt_down = min(down_payment, final_price)
-        loan_amount = (final_price - opt_down).quantize(Decimal("0.01"))
-        emi_amount = Decimal("0.00")
-
-        if loan_amount > Decimal("0.00") and loan_tenure > 0:
-            emi_calc = EMIService.calculate(
-                principal=loan_amount,
-                annual_interest_rate=interest_rate,
-                tenure_months=loan_tenure,
-            )
-            emi_amount = emi_calc.monthly_emi
-
         brand_name = variant.model.brand.name if variant.model and variant.model.brand else ""
         model_name = variant.model.name if variant.model else ""
         full_vehicle_name = f"{brand_name} {model_name} {variant.name}".strip() if (brand_name or model_name) else variant.name
@@ -160,11 +144,6 @@ class QuotationService:
             "discount": f"{discount_amount:.2f}",
             "offer_title": offer_title,
             "final_price": f"{final_price:.2f}",
-            "down_payment": f"{opt_down:.2f}",
-            "loan_amount": f"{loan_amount:.2f}",
-            "interest_rate": f"{interest_rate:.2f}",
-            "loan_tenure": loan_tenure,
-            "emi": f"{emi_amount:.2f}",
             "items": items_breakdown,
         }
 
@@ -177,9 +156,6 @@ class QuotationService:
             "discount_amount": discount_amount,
             "offer_title": offer_title,
             "final_price": final_price,
-            "down_payment": opt_down,
-            "loan_amount": loan_amount,
-            "emi_amount": emi_amount,
             "full_name": full_vehicle_name,
             "accessories": accessories,
             "snapshot": snapshot,
@@ -211,17 +187,8 @@ class QuotationService:
             offer_id=req.offer_id,
             accessory_ids=req.accessory_ids,
             custom_items=req.custom_items,
-            down_payment=req.down_payment,
-            loan_tenure=req.loan_tenure,
-            interest_rate=req.interest_rate,
             option_label="A",
         )
-
-        if req.down_payment > opt_a["final_price"]:
-            raise BadRequestException(
-                "INVALID_DOWN_PAYMENT",
-                f"Down payment (Rs. {req.down_payment}) cannot exceed final on-road price (Rs. {opt_a['final_price']}).",
-            )
 
         # 3. Calculate Option B if comparison requested
         opt_b = None
@@ -236,9 +203,6 @@ class QuotationService:
                 offer_id=req.compare_offer_id,
                 accessory_ids=req.accessory_ids,
                 custom_items=req.custom_items,
-                down_payment=req.down_payment,
-                loan_tenure=req.loan_tenure,
-                interest_rate=req.interest_rate,
                 option_label="B",
             )
 
@@ -259,11 +223,7 @@ class QuotationService:
             accessories=opt_a["accessories_total"],
             discount=opt_a["discount_amount"],
             final_price=opt_a["final_price"],
-            down_payment=opt_a["down_payment"],
-            loan_amount=opt_a["loan_amount"],
-            interest_rate=req.interest_rate,
-            loan_tenure=req.loan_tenure,
-            emi=opt_a["emi_amount"],
+            payment_mode=req.payment_mode,
             status="GENERATED",
             expires_at=expires_at,
             idempotency_key=key,
@@ -360,11 +320,7 @@ class QuotationService:
             "discount": f"{opt_a['discount_amount']:.2f}",
             "offer_title": opt_a["offer_title"],
             "final_price": f"{opt_a['final_price']:.2f}",
-            "down_payment": f"{opt_a['down_payment']:.2f}",
-            "loan_amount": f"{opt_a['loan_amount']:.2f}",
-            "interest_rate": f"{req.interest_rate:.2f}",
-            "loan_tenure": req.loan_tenure,
-            "emi": f"{opt_a['emi_amount']:.2f}",
+            "payment_mode": req.payment_mode,
             "items": opt_a["snapshot"]["items"],
             "options": options_list,
             "is_comparison": len(options_list) > 1,
@@ -385,7 +341,9 @@ class QuotationService:
             entity_id=created_quotation.id,
             new_value={
                 "quotation_number": quotation_number,
-                "final_price": str(opt_a["final_price"]),
+                "final_price": None if opt_b else str(opt_a["final_price"]),
+                "option_prices": {"A": str(opt_a["final_price"]), "B": str(opt_b["final_price"])} if opt_b else None,
+                "payment_mode": req.payment_mode,
                 "customer_id": req.customer_id,
                 "variant_id": req.variant_id,
                 "compare_variant_id": req.compare_variant_id,
@@ -402,7 +360,11 @@ class QuotationService:
                 code="IDEMPOTENCY_KEY_CONFLICT",
                 message="This idempotency key was already used by another user.",
             )
-        if existing.customer_id != req.customer_id or existing.variant_id != req.variant_id:
+        if (
+            existing.customer_id != req.customer_id
+            or existing.variant_id != req.variant_id
+            or existing.payment_mode != req.payment_mode
+        ):
             raise ConflictException(
                 code="IDEMPOTENCY_KEY_MISMATCH",
                 message="This idempotency key was already used for a different quotation request.",

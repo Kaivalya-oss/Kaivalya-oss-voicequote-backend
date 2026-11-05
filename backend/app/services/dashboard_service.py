@@ -1,11 +1,11 @@
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Dict, List
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.customer import Customer
 from app.models.lead import Lead
-from app.models.quotation import Quotation
+from app.models.quotation import Quotation, QuotationItem
 from app.models.inventory import InventoryUnit
 from app.models.test_ride import TestRide
 from app.models.followup import Followup
@@ -17,6 +17,13 @@ from app.schemas.dashboard import (
     LeadsDashboardMetrics,
     InventoryDashboardMetrics,
     RevenueDashboardMetrics,
+)
+
+
+# A comparison lists alternatives and final_price holds only Option A, so it has no single
+# amount. Money totals cover single-vehicle quotations; the excluded count is reported beside them.
+IS_COMPARISON = exists().where(
+    QuotationItem.quotation_id == Quotation.id, QuotationItem.item_type == "VEHICLE_OPTION"
 )
 
 
@@ -40,8 +47,15 @@ class DashboardService:
         purchases = (await self.session.execute(select(func.count(Lead.id)).where(Lead.status == "PURCHASED"))).scalar_one()
 
         # Revenue from accepted quotations
-        rev_stmt = select(func.coalesce(func.sum(Quotation.final_price), Decimal("0.00"))).where(Quotation.status == "ACCEPTED")
+        rev_stmt = select(func.coalesce(func.sum(Quotation.final_price), Decimal("0.00"))).where(
+            Quotation.status == "ACCEPTED", ~IS_COMPARISON
+        )
         revenue = (await self.session.execute(rev_stmt)).scalar_one()
+        accepted_comparisons = (
+            await self.session.execute(
+                select(func.count(Quotation.id)).where(Quotation.status == "ACCEPTED", IS_COMPARISON)
+            )
+        ).scalar_one()
 
         # Followups pending
         pending_fups = (await self.session.execute(select(func.count(Followup.id)).where(Followup.status == "SCHEDULED"))).scalar_one()
@@ -66,6 +80,7 @@ class DashboardService:
             active_bookings=bookings,
             completed_purchases=purchases,
             total_revenue=revenue,
+            accepted_comparisons_excluded_from_revenue=accepted_comparisons,
             pending_followups=pending_fups,
             available_inventory=avail_inv,
             reserved_inventory=res_inv,
@@ -162,19 +177,27 @@ class DashboardService:
         )
 
     async def get_revenue_metrics(self) -> RevenueDashboardMetrics:
-        rev_stmt = select(func.coalesce(func.sum(Quotation.final_price), Decimal("0.00"))).where(Quotation.status == "ACCEPTED")
+        rev_stmt = select(func.coalesce(func.sum(Quotation.final_price), Decimal("0.00"))).where(
+            Quotation.status == "ACCEPTED", ~IS_COMPARISON
+        )
         total_rev = (await self.session.execute(rev_stmt)).scalar_one()
 
-        pipe_stmt = select(func.coalesce(func.sum(Quotation.final_price), Decimal("0.00"))).where(Quotation.status.in_(["GENERATED", "SENT"]))
+        pipe_stmt = select(func.coalesce(func.sum(Quotation.final_price), Decimal("0.00"))).where(
+            Quotation.status.in_(["GENERATED", "SENT"]), ~IS_COMPARISON
+        )
         pipe_rev = (await self.session.execute(pipe_stmt)).scalar_one()
 
-        avg_stmt = select(func.coalesce(func.avg(Quotation.final_price), Decimal("0.00")))
+        excluded = (
+            await self.session.execute(select(func.count(Quotation.id)).where(IS_COMPARISON))
+        ).scalar_one()
+
+        avg_stmt = select(func.coalesce(func.avg(Quotation.final_price), Decimal("0.00"))).where(~IS_COMPARISON)
         avg_rev = (await self.session.execute(avg_stmt)).scalar_one()
 
         by_var_stmt = (
             select(VehicleVariant.name, func.coalesce(func.sum(Quotation.final_price), Decimal("0.00")))
             .join(Quotation, Quotation.variant_id == VehicleVariant.id)
-            .where(Quotation.status == "ACCEPTED")
+            .where(Quotation.status == "ACCEPTED", ~IS_COMPARISON)
             .group_by(VehicleVariant.name)
         )
         by_var_rows = (await self.session.execute(by_var_stmt)).all()
@@ -185,4 +208,5 @@ class DashboardService:
             average_quotation_value=avg_rev.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
             quotation_value_pipeline=pipe_rev,
             revenue_by_variant=rev_by_variant,
+            comparison_quotations_excluded=excluded,
         )

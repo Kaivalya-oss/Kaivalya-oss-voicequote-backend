@@ -46,7 +46,7 @@ async def customer_lead_quote(client: AsyncClient, token: str, vid: int):
     lead = (await client.post("/api/v1/leads", headers=H(token),
                               json={"customer_id": c["id"], "interested_variant_id": vid})).json()["data"]
     q = (await client.post("/api/v1/quotations", headers=H(token),
-                           json={"customer_id": c["id"], "variant_id": vid, "down_payment": 0})).json()["data"]
+                           json={"customer_id": c["id"], "variant_id": vid})).json()["data"]
     return c, lead, q
 
 
@@ -125,7 +125,7 @@ async def test_salesperson_reads_are_scoped(client: AsyncClient, admin_token: st
 
     # B quotes for that customer -> B now handles them and can open the customer and own quote
     qb = (await client.post("/api/v1/quotations", headers=H(b_token),
-                            json={"customer_id": cust["id"], "variant_id": vid, "down_payment": 0})).json()["data"]
+                            json={"customer_id": cust["id"], "variant_id": vid})).json()["data"]
     assert (await client.get(f"/api/v1/customers/{cust['id']}", headers=H(b_token))).status_code == 200
     assert (await client.get(f"/api/v1/quotations/{qb['id']}/pdf", headers=H(b_token))).status_code == 200
     # ...but still not A's quotation or A's lead
@@ -207,12 +207,11 @@ async def test_quotation_input_validation(client: AsyncClient, sales_token: str)
     cust = (await client.post("/api/v1/customers", headers=H(sales_token),
                               json={"full_name": "Validation Test", "phone": unique_phone()})).json()["data"]
     accs = (await client.get("/api/v1/vehicles/catalog/accessories", headers=H(sales_token))).json()["data"]
-    base = {"customer_id": cust["id"], "variant_id": vid, "down_payment": 0}
+    base = {"customer_id": cust["id"], "variant_id": vid}
     post = lambda **kw: client.post("/api/v1/quotations", headers=H(sales_token), json={**base, **kw})
 
-    assert (await post(interest_rate=500)).status_code == 422
-    assert (await post(interest_rate=36.01)).status_code == 422
-    assert (await post(interest_rate=36)).status_code == 201
+    assert (await post(payment_mode="LOAN")).status_code == 422
+    assert (await post(payment_mode="FINANCE")).status_code == 201
     assert (await post(accessory_ids=[accs[0]["id"], accs[0]["id"]])).status_code == 422
     unknown = await post(accessory_ids=[999999])
     assert unknown.status_code == 404 and unknown.json()["error"]["code"] == "ACCESSORY_NOT_FOUND"
@@ -251,7 +250,7 @@ async def test_quotation_status_state_machine_and_expiry(client: AsyncClient, sa
     cust = (await client.post("/api/v1/customers", headers=H(sales_token),
                               json={"full_name": "Status Test", "phone": unique_phone()})).json()["data"]
     mk = lambda: client.post("/api/v1/quotations", headers=H(sales_token),
-                             json={"customer_id": cust["id"], "variant_id": vid, "down_payment": 0})
+                             json={"customer_id": cust["id"], "variant_id": vid})
     st = lambda qid, s: client.put(f"/api/v1/quotations/{qid}/status", headers=H(sales_token), json={"status": s})
 
     q = (await mk()).json()["data"]

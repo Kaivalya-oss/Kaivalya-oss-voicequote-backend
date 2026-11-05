@@ -22,7 +22,7 @@ async def make_quote(client: AsyncClient, token: str, email: str | None = "buyer
         body["email"] = email
     cust = (await client.post("/api/v1/customers", headers=H(token), json=body)).json()["data"]
     q = await client.post("/api/v1/quotations", headers=H(token),
-                          json={"customer_id": cust["id"], "variant_id": vid, "down_payment": 0})
+                          json={"customer_id": cust["id"], "variant_id": vid})
     return q.json()["data"]
 
 

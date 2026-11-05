@@ -129,15 +129,30 @@ class DailyExportService:
         if scoped_user_id:
             q = q.where(Quotation.sales_executive_id == scoped_user_id)
         quotes = (await self.session.execute(q)).unique().scalars().all()
+
+        def option_b(x) -> list:
+            """Vehicle, on-road price and discount of Option B; blank for a single-vehicle quotation."""
+            options = [it for it in x.items if it.item_type == "VEHICLE_OPTION"]
+            if len(options) < 2:
+                return ["", None, None]
+            snap = options[1].details_json or {}
+            discount = snap.get("discount")
+            return [
+                snap.get("full_name") or options[1].item_name,
+                _money(options[1].total_price),
+                _money(Decimal(str(discount))) if discount is not None else None,
+            ]
+
         quote_section = Section(
             "Quotations",
-            ["Created", "Quotation No.", "Customer", "Phone", "Vehicle", "On-road price (₹)", "Discount (₹)",
-             "Down payment (₹)", "EMI (₹/month)", "Tenure (months)", "Status", "Salesperson", "Last update"],
+            ["Created", "Quotation No.", "Customer", "Phone", "Vehicle (Option A)", "On-road price A (₹)",
+             "Discount A (₹)", "Option B vehicle", "On-road price B (₹)", "Discount B (₹)", "Payment mode",
+             "Status", "Salesperson", "Last update"],
             [[_t(x.created_at), x.quotation_number, x.customer.full_name if x.customer else "",
               x.customer.phone if x.customer else "", _vehicle(x.variant), _money(x.final_price),
-              _money(x.discount), _money(x.down_payment), _money(x.emi), x.loan_tenure, _label(x.status),
+              _money(x.discount), *option_b(x), _label(x.payment_mode), _label(x.status),
               who(x.sales_executive_id), _t(x.updated_at)] for x in quotes],
-            money_columns=(5, 6, 7, 8),
+            money_columns=(5, 6, 8, 9),
         )
 
         # --- Follow-ups due today or completed today ---
@@ -185,14 +200,17 @@ class DailyExportService:
     @staticmethod
     def summary_rows(day: date, sections: List[Section], scope: str) -> List[List[Any]]:
         quotes = next(s for s in sections if s.title == "Quotations")
-        value = sum(r[5] or 0 for r in quotes.rows)
+        # Option B column set = a comparison of alternatives, which has no single amount to total.
+        comparisons = sum(1 for r in quotes.rows if r[7])
+        value = sum(r[5] or 0 for r in quotes.rows if not r[7])
         return [
             ["Date", day.strftime("%d-%m-%Y")],
             ["Generated", datetime.now(IST).strftime("%d-%m-%Y %H:%M IST")],
             ["Scope", scope],
             [],
             *[[s.title, len(s.rows)] for s in sections],
-            ["Quotation value (₹)", value],
+            ["Single-vehicle quotation value (₹)", value],
+            ["Comparison quotations (not totalled)", comparisons],
         ]
 
     @staticmethod
@@ -227,8 +245,8 @@ class DailyExportService:
             summary.append(row)
         for row in summary.iter_rows(min_row=2):
             row[0].font = bold
-        summary.cell(row=summary.max_row, column=2).number_format = "#,##0"
-        summary.column_dimensions["A"].width = 24
+        summary.cell(row=summary.max_row - 1, column=2).number_format = "#,##0"
+        summary.column_dimensions["A"].width = 36
         summary.column_dimensions["B"].width = 24
 
         for s in sections:

@@ -1,5 +1,5 @@
 from decimal import Decimal
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
@@ -11,6 +11,7 @@ class DashboardSummary(BaseModel):
     active_bookings: int
     completed_purchases: int
     total_revenue: Decimal
+    accepted_comparisons_excluded_from_revenue: int = 0
     pending_followups: int
     available_inventory: int
     reserved_inventory: int
@@ -48,4 +49,5 @@ class RevenueDashboardMetrics(BaseModel):
     total_revenue: Decimal
     average_quotation_value: Decimal
     quotation_value_pipeline: Decimal
-    revenue_by_variant: List[Dict[str, Decimal]]
+    revenue_by_variant: List[Dict[str, Any]]
+    comparison_quotations_excluded: int = 0

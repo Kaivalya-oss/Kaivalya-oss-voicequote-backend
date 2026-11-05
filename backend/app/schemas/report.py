@@ -4,13 +4,22 @@ from typing import List, Optional
 from pydantic import BaseModel
 
 
+class VehicleOptionPrice(BaseModel):
+    vehicle: str
+    final_price: Decimal
+
+
 class SalesReportItem(BaseModel):
     quotation_id: int
     quotation_number: str
     customer_name: str
     variant_name: str
     sales_executive_name: str
-    final_price: Decimal
+    # None for a comparison, whose alternatives are listed in option_prices instead.
+    final_price: Optional[Decimal] = None
+    is_comparison: bool = False
+    option_prices: List[VehicleOptionPrice] = []
+    payment_mode: str
     status: str
     created_at: datetime
 

@@ -27,7 +27,7 @@ async def test_daily_export_excel_csv_and_scoping(client: AsyncClient, sales_tok
                       json={"customer_id": customer["id"], "interested_variant_id": variant["id"]})
     quote = (await client.post("/api/v1/quotations", headers=H(sales_token),
                                json={"customer_id": customer["id"], "variant_id": variant["id"],
-                                     "down_payment": 0})).json()["data"]
+                                     })).json()["data"]
 
     # Excel: summary + one sheet per section, today's records present
     res = await client.get("/api/v1/reports/daily-export?format=xlsx", headers=H(sales_token))

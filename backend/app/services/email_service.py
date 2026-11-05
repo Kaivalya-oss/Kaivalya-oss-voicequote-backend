@@ -61,10 +61,6 @@ class EmailService:
             name_b = snap_b.get("variant_name", vehicle_options[1].item_name)
             price_a = Decimal(str(snap_a.get("final_price", vehicle_options[0].total_price)))
             price_b = Decimal(str(snap_b.get("final_price", vehicle_options[1].total_price)))
-            emi_a = Decimal(str(snap_a.get("emi", 0)))
-            emi_b = Decimal(str(snap_b.get("emi", 0)))
-            tenure_a = snap_a.get("loan_tenure") or quote.loan_tenure
-            tenure_b = snap_b.get("loan_tenure") or quote.loan_tenure
 
             lines = [
                 f"Dear {customer.full_name},",
@@ -72,19 +68,14 @@ class EmailService:
                 f"Thank you for visiting our showroom! Here is your official vehicle comparison quotation.",
                 "",
                 f"Quotation number: {quote.quotation_number}",
+                f"Payment mode:     {quote.payment_mode.title()}",
                 "",
                 f"OPTION A — {name_a}:",
                 f"On-road price:    {_money(price_a)}",
-            ]
-            if emi_a > 0:
-                lines.append(f"Monthly EMI:      {_money(emi_a)} x {tenure_a} months")
-            lines += [
                 "",
                 f"OPTION B — {name_b}:",
                 f"On-road price:    {_money(price_b)}",
             ]
-            if emi_b > 0:
-                lines.append(f"Monthly EMI:      {_money(emi_b)} x {tenure_b} months")
             if quote.expires_at:
                 lines.append(f"Valid until:      {quote.expires_at:%d %b %Y}")
             lines += [
@@ -120,9 +111,8 @@ class EmailService:
             "",
             f"Quotation number: {quote.quotation_number}",
             f"On-road price:    {_money(quote.final_price)}",
+            f"Payment mode:     {quote.payment_mode.title()}",
         ]
-        if quote.emi and quote.emi > 0:
-            lines.append(f"Monthly EMI:      {_money(quote.emi)} x {quote.loan_tenure} months")
         if quote.expires_at:
             lines.append(f"Valid until:      {quote.expires_at:%d %b %Y}")
         lines += [
@@ -175,6 +165,7 @@ class EmailService:
                 f"Sent to:    {to_email}",
                 f"Vehicle:    {vehicle_info}",
                 f"Price:      {price_info}",
+                f"Payment:    {quote.payment_mode.title()}",
                 f"Sent by:    {sent_by}",
             ])
         )

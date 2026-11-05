@@ -24,7 +24,7 @@ class BaseWhatsAppProvider(ABC):
         quotation_number: str,
         vehicle_name: str,
         final_price: Decimal,
-        emi: Decimal,
+        payment_mode: str,
         pdf_path: Optional[str] = None,
         options: Optional[list] = None,
     ) -> Dict[str, Any]:
@@ -48,7 +48,7 @@ class MetaCloudWhatsAppProvider(BaseWhatsAppProvider):
         quotation_number: str,
         vehicle_name: str,
         final_price: Decimal,
-        emi: Decimal,
+        payment_mode: str,
         pdf_path: Optional[str] = None,
         options: Optional[list] = None,
     ) -> Dict[str, Any]:
@@ -59,17 +59,15 @@ class MetaCloudWhatsAppProvider(BaseWhatsAppProvider):
             body_text = (
                 f"Hello {customer_name},\n\n"
                 f"Thank you for visiting our showroom! Here is your official vehicle comparison quotation.\n\n"
-                f"📄 *Quotation No:* {quotation_number}\n\n"
+                f"📄 *Quotation No:* {quotation_number}\n"
+                f"💳 *Payment Mode:* {payment_mode.title()}\n\n"
             )
             for idx, opt in enumerate(options):
                 label = opt.get("label", f"Option {chr(65+idx)}")
                 body_text += (
                     f"*{label}: {opt['name']}*\n"
-                    f"💰 *On-Road Price:* Rs. {opt['final_price']:,.2f}\n"
+                    f"💰 *On-Road Price:* Rs. {opt['final_price']:,.2f}\n\n"
                 )
-                if opt.get("emi") and opt["emi"] > Decimal("0.00"):
-                    body_text += f"💳 *Estimated Monthly EMI:* Rs. {opt['emi']:,.2f}/month\n"
-                body_text += "\n"
             body_text += (
                 f"Please find your detailed side-by-side comparison document attached.\n"
                 f"Feel free to reply to this message or visit our showroom to book your vehicle!"
@@ -80,10 +78,8 @@ class MetaCloudWhatsAppProvider(BaseWhatsAppProvider):
                 f"Thank you for visiting our showroom! Here is your official quotation for the *{vehicle_name}*.\n\n"
                 f"📄 *Quotation No:* {quotation_number}\n"
                 f"💰 *On-Road Price:* Rs. {final_price:,.2f}\n"
+                f"💳 *Payment Mode:* {payment_mode.title()}\n"
             )
-            if emi > Decimal("0.00"):
-                body_text += f"💳 *Estimated Monthly EMI:* Rs. {emi:,.2f}/month\n"
-
             body_text += (
                 f"\nPlease find your detailed quotation document attached.\n"
                 f"Feel free to reply to this message or visit our showroom to book your vehicle!"
@@ -127,7 +123,7 @@ class MockWhatsAppProvider(BaseWhatsAppProvider):
         quotation_number: str,
         vehicle_name: str,
         final_price: Decimal,
-        emi: Decimal,
+        payment_mode: str,
         pdf_path: Optional[str] = None,
         options: Optional[list] = None,
     ) -> Dict[str, Any]:
@@ -140,6 +136,7 @@ class MockWhatsAppProvider(BaseWhatsAppProvider):
         logger.info(
             f"[MOCK WHATSAPP DISPATCH] To: {clean_phone} | Customer: {customer_name} | "
             f"Quote: {quotation_number} | Vehicle: {display_vehicle} | Price: {display_price} | "
+            f"Payment: {payment_mode} | "
             f"Attachment: {pdf_path}"
         )
         return {
@@ -195,7 +192,6 @@ class WhatsAppService:
                     "label": f"Option {chr(65+idx)}",
                     "name": snap.get("variant_name", it.item_name),
                     "final_price": Decimal(str(snap.get("final_price", it.total_price))),
-                    "emi": Decimal(str(snap.get("emi", 0))),
                 })
 
         result = await self.provider.send_quotation_message(
@@ -204,7 +200,7 @@ class WhatsAppService:
             quotation_number=quote.quotation_number,
             vehicle_name=quote.variant.name if quote.variant else f"Variant #{quote.variant_id}",
             final_price=quote.final_price,
-            emi=quote.emi,
+            payment_mode=quote.payment_mode,
             pdf_path=pdf_path,
             options=options_data,
         )

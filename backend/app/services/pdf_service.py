@@ -96,6 +96,7 @@ class PDFService:
             Paragraph(f"<b>Date:</b> {quote_data.get('date', datetime.now().strftime('%d-%b-%Y'))}", cell_style),
             Paragraph(f"<b>Valid Until:</b> {quote_data.get('valid_until', '15 Days from Issue')}", cell_style),
             Paragraph(f"<b>Status:</b> {quote_data.get('status', 'GENERATED')}", cell_bold),
+            Paragraph(f"<b>Payment Mode:</b> {quote_data.get('payment_mode', 'CASH').title()}", cell_bold),
         ]
 
         header_table = Table([[header_text, quote_meta]], colWidths=[360, 180])
@@ -222,46 +223,7 @@ class PDFService:
         story.append(price_table)
         story.append(Spacer(1, 8))
 
-        # 5. Finance & Loan Estimation Table
-        down_payment = Decimal(str(quote_data.get("down_payment", "0.00")))
-        loan_amount = Decimal(str(quote_data.get("loan_amount", "0.00")))
-
-        if loan_amount > Decimal("0"):
-            story.append(Paragraph("<b>FINANCE & EMI SCHEME</b>", section_style))
-            finance_rows = [
-                [
-                    Paragraph("<b>Down Payment</b>", cell_style),
-                    Paragraph(f"Rs. {down_payment:.2f}", cell_bold),
-                    Paragraph("<b>Loan Principal</b>", cell_style),
-                    Paragraph(f"Rs. {loan_amount:.2f}", cell_bold),
-                ],
-                [
-                    Paragraph("<b>Tenure</b>", cell_style),
-                    Paragraph(f"{quote_data.get('loan_tenure', 36)} Months", cell_style),
-                    Paragraph("<b>Interest Rate</b>", cell_style),
-                    Paragraph(f"{quote_data.get('interest_rate', '0.00')}% p.a.", cell_style),
-                ],
-                [
-                    Paragraph("<b>Monthly EMI</b>", cell_bold),
-                    Paragraph(f"<b>Rs. {quote_data.get('emi', '0.00')} / mo</b>", cell_bold),
-                    Paragraph("<b>Financier</b>", cell_style),
-                    Paragraph("In-house Partner Bank", cell_style),
-                ],
-            ]
-            finance_table = Table(finance_rows, colWidths=[130, 140, 130, 140])
-            finance_table.setStyle(
-                TableStyle([
-                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F7FAFC")),
-                    ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E0")),
-                    ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
-                    ("TOPPADDING", (0, 0), (-1, -1), 4),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                ])
-            )
-            story.append(finance_table)
-            story.append(Spacer(1, 8))
-
-        # 6. Terms and Signatures
+        # 5. Terms and Signatures
         terms_text = (
             "<b>Terms & Conditions:</b><br/>"
             "1. Quotation prices are valid for 15 days from the date of issuance.<br/>"
@@ -320,6 +282,7 @@ class PDFService:
             Paragraph(f"<b>Date:</b> {quote_data.get('date', datetime.now().strftime('%d-%b-%Y'))}", cell_style),
             Paragraph(f"<b>Valid Until:</b> {quote_data.get('valid_until', '15 Days from Issue')}", cell_style),
             Paragraph(f"<b>Status:</b> {quote_data.get('status', 'GENERATED')}", cell_bold),
+            Paragraph(f"<b>Payment Mode:</b> {quote_data.get('payment_mode', 'CASH').title()}", cell_bold),
         ]
 
         header_table = Table([[header_text, quote_meta]], colWidths=[360, 180])
@@ -405,26 +368,6 @@ class PDFService:
                 Paragraph("<b>TOTAL ON-ROAD FINAL PRICE</b>", cell_bold),
                 Paragraph(f"<b>{money(opt_a.get('final_price'))}</b>", cell_bold),
                 Paragraph(f"<b>{money(opt_b.get('final_price'))}</b>", cell_bold),
-            ],
-            [
-                Paragraph("Down Payment", cell_style),
-                Paragraph(money(opt_a.get('down_payment')), cell_style),
-                Paragraph(money(opt_b.get('down_payment')), cell_style),
-            ],
-            [
-                Paragraph("Loan Principal Amount", cell_style),
-                Paragraph(money(opt_a.get('loan_amount')), cell_style),
-                Paragraph(money(opt_b.get('loan_amount')), cell_style),
-            ],
-            [
-                Paragraph("Tenure & Interest Rate", cell_style),
-                Paragraph(f"{opt_a.get('loan_tenure', 0)} Mos @ {opt_a.get('interest_rate', '0.00')}%" if opt_a.get('loan_tenure') else "No loan", cell_style),
-                Paragraph(f"{opt_b.get('loan_tenure', 0)} Mos @ {opt_b.get('interest_rate', '0.00')}%" if opt_b.get('loan_tenure') else "No loan", cell_style),
-            ],
-            [
-                Paragraph("<b>Estimated Monthly EMI</b>", cell_bold),
-                Paragraph(f"<b>{money(opt_a.get('emi'))} / mo</b>" if Decimal(str(opt_a.get('emi', 0))) > 0 else "—", cell_bold),
-                Paragraph(f"<b>{money(opt_b.get('emi'))} / mo</b>" if Decimal(str(opt_b.get('emi', 0))) > 0 else "—", cell_bold),
             ],
         ]
 
@@ -544,10 +487,7 @@ class PDFService:
             row("Accessories & items", [money(q.accessories) for q in quotes]),
             row("Discount", [f"- {money(q.discount)}" if q.discount else money(0) for q in quotes]),
             row("On-road final price", [money(q.final_price) for q in quotes], strong=True),
-            row("Down payment", [money(q.down_payment) for q in quotes]),
-            row("Loan amount", [money(q.loan_amount) for q in quotes]),
-            row("Interest / tenure", [f"{q.interest_rate}% p.a. / {q.loan_tenure} months" if q.loan_tenure else "No loan" for q in quotes]),
-            row("Monthly EMI", [money(q.emi) if q.emi else "-" for q in quotes], strong=True),
+            row("Payment mode", [q.payment_mode.title() for q in quotes]),
             row("Valid until", [f"{q.expires_at:%d-%b-%Y}" if q.expires_at else "-" for q in quotes]),
         ]
         final_row = 9
@@ -569,11 +509,7 @@ class PDFService:
             cheaper = "A" if diff > 0 else "B"
             if diff:
                 story.append(Spacer(1, 8))
-                story.append(Paragraph(
-                    f"Vehicle {cheaper} is {money(abs(diff))} cheaper on-road"
-                    + (f"; EMI difference {money(abs(Decimal(b.emi) - Decimal(a.emi)))} per month." if a.emi or b.emi else "."),
-                    bold,
-                ))
+                story.append(Paragraph(f"Vehicle {cheaper} is {money(abs(diff))} cheaper on-road.", bold))
 
         items_present = [q for q in quotes if q.items]
         if items_present:
