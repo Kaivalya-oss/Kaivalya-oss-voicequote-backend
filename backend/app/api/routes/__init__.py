@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 
+from app.core.config import settings
 from app.api.routes.auth import router as auth_router
 from app.api.routes.customers import router as customers_router
 from app.api.routes.vehicles import router as vehicles_router
@@ -17,7 +18,14 @@ from app.api.routes.users import router as users_router
 
 api_v1_router = APIRouter(prefix="/api/v1")
 
-api_v1_router.include_router(auth_router)
+if settings.MULTI_TENANT_ENABLED:
+    # Accounts and staff live in the control plane; the single-showroom versions are not served.
+    from app.control_plane.routes import router as platform_router
+
+    api_v1_router.include_router(platform_router)
+else:
+    api_v1_router.include_router(auth_router)
+    api_v1_router.include_router(users_router)
 api_v1_router.include_router(customers_router)
 api_v1_router.include_router(vehicles_router)
 api_v1_router.include_router(inventory_router)
@@ -30,4 +38,3 @@ api_v1_router.include_router(test_rides_router)
 api_v1_router.include_router(dashboard_router)
 api_v1_router.include_router(reports_router)
 api_v1_router.include_router(ai_router)
-api_v1_router.include_router(users_router)

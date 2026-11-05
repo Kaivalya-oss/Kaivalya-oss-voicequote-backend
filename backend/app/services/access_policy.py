@@ -41,7 +41,7 @@ def is_manager(user: User) -> bool:
 
 def is_scoped_reader(user: User) -> bool:
     """Roles whose read access is limited to their own sales records."""
-    return user.role.name == RoleEnum.SALES_EXECUTIVE.value
+    return user.role.name in (RoleEnum.SALES_EXECUTIVE.value, RoleEnum.SALESPERSON.value)
 
 
 def handled_customer_ids(user_id: int):

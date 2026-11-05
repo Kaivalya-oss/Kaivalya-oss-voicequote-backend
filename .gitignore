@@ -60,3 +60,7 @@ generated_pdfs/*
 !**/uploads/.gitkeep
 **/generated_pdfs/*
 !**/generated_pdfs/.gitkeep
+
+# Local certificates for the multi-tenant test databases
+backend/.saas-test-certs/
+backend/.secrets/

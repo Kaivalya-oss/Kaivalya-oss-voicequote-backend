@@ -35,7 +35,7 @@ def create_access_token(subject: Union[str, Any], extra_claims: Optional[Dict[st
     return jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 
-def create_refresh_token(subject: Union[str, Any]) -> str:
+def create_refresh_token(subject: Union[str, Any], extra_claims: Optional[Dict[str, Any]] = None) -> str:
     """Create a signed JWT refresh token."""
     expire = datetime.now(timezone.utc) + timedelta(days=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS)
     to_encode = {
@@ -44,6 +44,8 @@ def create_refresh_token(subject: Union[str, Any]) -> str:
         "iat": datetime.now(timezone.utc),
         "type": "refresh",
     }
+    if extra_claims:
+        to_encode.update(extra_claims)
     return jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 

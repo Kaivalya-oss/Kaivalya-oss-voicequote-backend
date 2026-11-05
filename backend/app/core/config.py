@@ -1,4 +1,5 @@
 import os
+from decimal import Decimal
 from functools import lru_cache
 from typing import List, Union
 from pydantic import Field, field_validator, model_validator
@@ -71,6 +72,14 @@ class Settings(BaseSettings):
 
     # Gemini AI
     GEMINI_API_KEY: str = ""
+
+    # Multi-tenant SaaS. Off by default: the single-showroom application behaves as before.
+    MULTI_TENANT_ENABLED: bool = False
+    CONTROL_PLANE_DATABASE_URL: str = ""
+    INVITATION_EXPIRE_HOURS: int = 72
+    SAAS_DEFAULT_PLAN_ID: str = "standard-monthly"
+    SAAS_DEFAULT_PLAN_AMOUNT: Decimal = Decimal("0.00")  # set when pricing is decided; billing is a later phase
+    SAAS_DEFAULT_CURRENCY: str = "INR"
 
     # Storage Paths
     UPLOAD_DIR: str = "uploads"
