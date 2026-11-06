@@ -11,7 +11,7 @@ import uuid
 from collections import OrderedDict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import AsyncIterator, Dict
+from typing import AsyncIterator, Coroutine, Dict
 
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
@@ -33,6 +33,20 @@ class _Entry:
     secret_reference: str
     created_at: float
     last_used: float = 0.0
+
+
+_background_cleanups: set[asyncio.Task] = set()
+
+
+def _in_background(cleanup: Coroutine) -> None:
+    """Closing connections to a hung server can itself hang, so no request waits for it."""
+    task = asyncio.create_task(cleanup)
+    _background_cleanups.add(task)
+    task.add_done_callback(_background_cleanups.discard)
+
+
+def dispose_in_background(engine: AsyncEngine) -> None:
+    _in_background(engine.dispose())
 
 
 def build_engine(creds: TenantDbCredentials, pool_size: int | None = None) -> AsyncEngine:
@@ -102,6 +116,25 @@ class TenantConnectionManager:
             await self._evict_over_limit()
             return new_entry
 
+    async def _entry_for_request(self, tenant_id: uuid.UUID, secret_reference: str) -> _Entry:
+        """For a stored connection any failure here is an outage, not a mistake the staff member can fix."""
+        try:
+            # Bounded: DNS resolution can stall for far longer than a request should wait.
+            return await asyncio.wait_for(
+                self._entry(tenant_id, secret_reference), timeout=settings.TENANT_DB_CONNECT_TIMEOUT
+            )
+        except TimeoutError:
+            code = "TENANT_DB_TIMEOUT"
+        except TenantDatabaseError as err:
+            code = err.code
+        logger.warning(f"Tenant {tenant_id} database connection failed: {code}")
+        raise TenantDatabaseError("TENANT_DB_UNAVAILABLE") from None
+
+    def _retire_without_waiting(self, tenant_id: uuid.UUID) -> None:
+        old = self._entries.pop(tenant_id, None)
+        if old is not None:
+            dispose_in_background(old.engine)
+
     async def _retire(self, tenant_id: uuid.UUID) -> None:
         old = self._entries.pop(tenant_id, None)
         if old is not None:
@@ -127,21 +160,23 @@ class TenantConnectionManager:
         except TimeoutError:
             raise TenantDatabaseError("TENANT_DB_BUSY")
         try:
-            entry = await self._entry(tenant_id, secret_reference)
+            entry = await self._entry_for_request(tenant_id, secret_reference)
             entry.last_used = time.monotonic()
-            async with entry.sessions() as session:
-                try:
-                    # Connect now, so an unavailable database gives one clear, safe error
-                    # rather than a driver exception from the middle of a business operation.
-                    await session.connection()
-                except TenantDatabaseError:
-                    raise
-                except Exception as exc:
-                    code = classify_connection_error(exc).code
-                    logger.warning(f"Tenant {tenant_id} database connection failed: {code}")
-                    # Rebuild next time, in case the address or credentials changed.
-                    await self._retire(tenant_id)
-                    raise TenantDatabaseError("TENANT_DB_UNAVAILABLE") from None
+            session = entry.sessions()
+            try:
+                # Connect now, so an unavailable database gives one clear, safe error rather than
+                # a driver exception from the middle of a business operation. The pre-ping on a
+                # pooled connection runs here too, so a hung server cannot hold a request for
+                # the longer command timeout.
+                await asyncio.wait_for(session.connection(), timeout=settings.TENANT_DB_CONNECT_TIMEOUT)
+            except Exception as exc:
+                code = classify_connection_error(exc).code
+                logger.warning(f"Tenant {tenant_id} database connection failed: {code}")
+                # Rebuild next time, in case the address or credentials changed.
+                self._retire_without_waiting(tenant_id)
+                _in_background(session.close())
+                raise TenantDatabaseError("TENANT_DB_UNAVAILABLE") from None
+            async with session:
                 yield session
         finally:
             limit.release()

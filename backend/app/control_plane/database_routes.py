@@ -13,7 +13,8 @@ from app.control_plane.schemas import ConnectionDetails
 from app.core.exceptions import AppException, ConflictException
 from app.core.logging import logger
 from app.core.tenant_context import TenantContext, require_tenant_roles
-from app.database.connection_manager import build_engine, connection_manager
+from app.core.config import settings
+from app.database.connection_manager import build_engine, connection_manager, dispose_in_background
 from app.database.control_plane import get_control_db
 from app.database.provisioning import check_connection, provision_database, provisioning_in_progress, verify_schema
 from app.database.secrets import SecretNotFound, get_secret_store
@@ -174,26 +175,35 @@ async def migrate_database(ctx: TenantContext = Depends(owner_only), session: As
     return SuccessResponse(data=_details(conn))
 
 
+async def _probe_health(creds: TenantDbCredentials) -> Optional[str]:
+    """Returns an error code. Every failure, including an unresolvable host, is a health result to record."""
+    engine = None
+    try:
+        engine = await asyncio.to_thread(build_engine, creds, 1)
+        async with engine.connect() as db:
+            tls = (await db.execute(text("SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()"))).scalar_one()
+            if tls is not True:
+                return "TENANT_DB_TLS_FAILED"
+        await verify_schema(engine)
+        return None
+    except AppException as err:
+        return err.code
+    except Exception:
+        return "TENANT_DB_UNAVAILABLE"
+    finally:
+        if engine is not None:
+            dispose_in_background(engine)
+
+
 @router.post("/health", response_model=SuccessResponse[HealthResponse])
 async def check_health(ctx: TenantContext = Depends(owner_only), session: AsyncSession = Depends(get_control_db)):
     conn = await _locked_connection(session, ctx)
     await session.commit()  # no row lock is held while talking to the showroom's database
     creds = await _stored_credentials(conn)
-    error_code: Optional[str] = None
-    engine = await asyncio.to_thread(build_engine, creds, 1)
     try:
-        async with engine.connect() as db:
-            tls = (await db.execute(text("SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()"))).scalar_one()
-            if tls is not True:
-                error_code = "TENANT_DB_TLS_FAILED"
-        if not error_code:
-            await verify_schema(engine)
-    except AppException as err:
-        error_code = err.code
-    except Exception:
-        error_code = "TENANT_DB_UNAVAILABLE"
-    finally:
-        await engine.dispose()
+        error_code = await asyncio.wait_for(_probe_health(creds), timeout=settings.TENANT_DB_HEALTH_TIMEOUT)
+    except TimeoutError:
+        error_code = "TENANT_DB_TIMEOUT"
     now = datetime.now(timezone.utc)
     conn = await _locked_connection(session, ctx)
     conn.last_health_check = now
