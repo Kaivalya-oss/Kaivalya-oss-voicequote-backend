@@ -6,6 +6,9 @@ import jwt
 from app.core.config import settings
 from app.core.exceptions import UnauthorizedException
 
+# Showroom tokens name their audience, so a token issued for any other service is refused.
+SHOWROOM_TOKEN_AUDIENCE = "voicequote-showroom"
+
 
 def hash_password(password: str) -> str:
     """Hash a plaintext password with bcrypt and a generated salt."""
@@ -29,6 +32,7 @@ def create_access_token(subject: Union[str, Any], extra_claims: Optional[Dict[st
         "exp": expire,
         "iat": datetime.now(timezone.utc),
         "type": "access",
+        "aud": SHOWROOM_TOKEN_AUDIENCE,
     }
     if extra_claims:
         to_encode.update(extra_claims)
@@ -43,6 +47,7 @@ def create_refresh_token(subject: Union[str, Any], extra_claims: Optional[Dict[s
         "exp": expire,
         "iat": datetime.now(timezone.utc),
         "type": "refresh",
+        "aud": SHOWROOM_TOKEN_AUDIENCE,
     }
     if extra_claims:
         to_encode.update(extra_claims)
@@ -56,6 +61,8 @@ def decode_token(token: str) -> Dict[str, Any]:
             token,
             settings.JWT_SECRET_KEY,
             algorithms=[settings.JWT_ALGORITHM],
+            audience=SHOWROOM_TOKEN_AUDIENCE,
+            options={"require": ["exp", "aud", "sub"]},
         )
         return payload
     except jwt.ExpiredSignatureError:
