@@ -280,10 +280,14 @@ async def test_invited_user_cannot_log_in_before_accepting(client: AsyncClient):
 
 
 async def test_central_schema_holds_no_showroom_business_data():
+    import app.platform_admin.models  # noqa: F401
+
     tables = set(ControlPlaneBase.metadata.tables)
     assert tables == {
         "tenants", "users", "tenant_memberships", "tenant_connections",
         "subscriptions", "subscription_events", "tenant_migration_runs",
+        "platform_admins", "platform_admin_sessions", "platform_admin_recovery_codes",
+        "platform_admin_throttle", "audit_events",
     }
     forbidden = {"customers", "quotations", "quotation_items", "leads", "followups", "test_rides",
                  "inventory_units", "vehicle_variants", "vehicle_models", "vehicle_brands", "offers", "accessories"}

@@ -26,6 +26,16 @@ os.environ["SECRETS_LOCAL_DIR"] = _secrets_dir
 os.environ["SECRETS_MASTER_KEY"] = Fernet.generate_key().decode()
 os.environ["PDF_STORAGE_DIR"] = tempfile.mkdtemp(prefix="vq-test-pdfs-")
 
+# The admin API's own settings. Test-only values, generated per run and different from showroom ones.
+ADMIN_TEST_ROLE = "vq_admin_test"
+ADMIN_TEST_ROLE_PASSWORD = "admin-role-test-only-" + uuid.uuid4().hex
+os.environ["ADMIN_DATABASE_URL"] = _base.replace(_base.split("://", 1)[1].split("@", 1)[0], f"{ADMIN_TEST_ROLE}:{ADMIN_TEST_ROLE_PASSWORD}", 1) + f"/{CONTROL_DB}"
+os.environ["ADMIN_BOOTSTRAP_DATABASE_URL"] = f"{_base}/{CONTROL_DB}"
+os.environ["ADMIN_JWT_SECRET_KEY"] = "admin-test-signing-key-" + uuid.uuid4().hex
+os.environ["ADMIN_MFA_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
+os.environ["ADMIN_ALLOWED_ORIGINS"] = "https://admin.test.invalid"
+os.environ["ADMIN_ENV"] = "test"
+
 import asyncpg  # noqa: E402
 import pytest  # noqa: E402
 import pytest_asyncio  # noqa: E402
@@ -50,6 +60,16 @@ async def _recreate_control_db() -> None:
         await conn.close()
 
 
+async def _create_admin_login_role() -> None:
+    url = make_url(settings.CONTROL_PLANE_DATABASE_URL)
+    conn = await asyncpg.connect(host=url.host, port=url.port or 5432, user=url.username, password=url.password, database=url.database)
+    try:
+        await conn.execute(f"DROP ROLE IF EXISTS {ADMIN_TEST_ROLE}")
+        await conn.execute(f"CREATE ROLE {ADMIN_TEST_ROLE} LOGIN PASSWORD '{ADMIN_TEST_ROLE_PASSWORD}' IN ROLE voicequote_platform_admin")
+    finally:
+        await conn.close()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def control_plane_schema():
     asyncio.run(_recreate_control_db())
@@ -57,6 +77,7 @@ def control_plane_schema():
     cfg = Config(os.path.join(root, "alembic_control.ini"))
     cfg.set_main_option("script_location", os.path.join(root, "alembic_control"))
     command.upgrade(cfg, "head")
+    asyncio.run(_create_admin_login_role())
 
 
 @pytest_asyncio.fixture

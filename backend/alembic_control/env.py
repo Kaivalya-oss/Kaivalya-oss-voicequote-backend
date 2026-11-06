@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from app.control_plane.models import ControlPlaneBase  # noqa: E402
+import app.platform_admin.models  # noqa: E402,F401  (registers the platform admin tables)
 from app.core.config import settings  # noqa: E402
 
 config = context.config
