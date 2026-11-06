@@ -1,0 +1,6 @@
+# These run inside Linux containers, so they must keep LF on every platform, including Windows checkouts.
+*.sh text eol=lf
+Dockerfile text eol=lf
+.dockerignore text eol=lf
+requirements*.txt text eol=lf
+requirements*.in text eol=lf

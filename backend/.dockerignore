@@ -1,0 +1,44 @@
+# Nothing here may reach the build context: credentials, keys, local environments, customer files.
+.git
+.gitignore
+.gitattributes
+
+# Credentials and keys
+.env
+.env.*
+**/.env
+**/.env.*
+.secrets
+**/.secrets
+credentials.json
+**/credentials*.json
+**/*.pem
+**/*.key
+**/*.crt
+**/*.enc
+.saas-test-certs
+
+# Local environments and caches
+.venv
+venv
+env
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.vscode
+.idea
+
+# Customer and runtime files
+generated_pdfs
+uploads
+**/*.log
+**/*.dump
+**/*.sql
+
+# Not used by any image
+Dockerfile
+.dockerignore
+docker-compose*.yml
+scripts/verify

@@ -16,7 +16,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --require-hashes -r requirements.txt
 
 
-# Production Stage
+# Everything the running application needs, and nothing else
 FROM python:3.13-slim@sha256:09a17cad02668ae61ece136b4fd36ac3849e14f670ebedb637ea3e15580525bc AS runtime
 
 WORKDIR /app
@@ -27,23 +27,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user and ensure storage directories exist FIRST
-RUN mkdir -p uploads generated_pdfs && \
-    useradd -u 1000 appuser && \
-    chown -R appuser:appuser /app
+# Non-root user. Only the storage directories are writable by it; application code stays root-owned.
+RUN useradd -m -u 1000 appuser && \
+    mkdir -p uploads generated_pdfs && \
+    chown appuser:appuser uploads generated_pdfs
 
-# Copy virtual environment from builder with proper ownership
-COPY --chown=appuser:appuser --from=builder /opt/venv /opt/venv
+COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
+ENV PYTHONDONTWRITEBYTECODE=1
 
-# Copy backend application source with proper ownership
-COPY --chown=appuser:appuser . .
+# An explicit list, so a new file is left out of the image unless someone chooses to add it.
+COPY alembic.ini alembic_control.ini ./
+COPY alembic ./alembic
+COPY alembic_control ./alembic_control
+COPY app ./app
+COPY scripts/create_admin.py scripts/start.sh ./scripts/
 
 USER appuser
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
 CMD ["sh", "scripts/start.sh"]
@@ -55,6 +59,10 @@ FROM runtime AS dev
 USER root
 COPY requirements-dev.txt .
 RUN pip install --no-cache-dir --require-hashes --no-deps -r requirements-dev.txt
+COPY tests ./tests
+COPY tests_saas ./tests_saas
+COPY pytest.ini pytest_saas.ini ./
+COPY scripts ./scripts
 USER appuser
 
 
