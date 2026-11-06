@@ -1,0 +1,64 @@
+# Isolated databases for verifying a built image. Use with: docker compose -p vqv -f <this file> up -d
+# No host ports and no shared network: nothing here can reach a live database, and nothing
+# outside can reach these. All data is in tmpfs and disappears on `down`. Fixed test passwords only.
+#
+# CERT_DIR must hold certificates from scripts/gen_saas_test_certs.py.
+x-showroom-db: &showroom-db
+  image: postgres:16-alpine
+  environment:
+    POSTGRES_USER: saas_admin
+    POSTGRES_PASSWORD: saas-admin-test-only
+    POSTGRES_DB: showroom_test
+  tmpfs:
+    - /var/lib/postgresql/data
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U saas_admin -d showroom_test"]
+    interval: 3s
+    timeout: 3s
+    retries: 20
+
+services:
+  # Plays three roles: single-showroom database, control-plane database and a non-TLS server.
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: vqv-test-only
+      POSTGRES_DB: vqv_single
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d vqv_single"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks:
+      verify:
+        aliases: [postgres]
+
+  saas-tenant-a:
+    <<: *showroom-db
+    volumes:
+      - ${CERT_DIR}:/certs:ro
+    entrypoint: >
+      sh -c "cp /certs/saas-tenant-a.key /tmp/server.key && chown postgres /tmp/server.key && chmod 600 /tmp/server.key
+      && exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/certs/saas-tenant-a.crt -c ssl_key_file=/tmp/server.key"
+    networks:
+      verify:
+        aliases: [saas-tenant-a]
+
+  saas-tenant-b:
+    <<: *showroom-db
+    volumes:
+      - ${CERT_DIR}:/certs:ro
+    entrypoint: >
+      sh -c "cp /certs/saas-tenant-b.key /tmp/server.key && chown postgres /tmp/server.key && chmod 600 /tmp/server.key
+      && exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/certs/saas-tenant-b.crt -c ssl_key_file=/tmp/server.key"
+    networks:
+      verify:
+        aliases: [saas-tenant-b]
+
+networks:
+  verify:
+    name: vqv_net
+    internal: true
