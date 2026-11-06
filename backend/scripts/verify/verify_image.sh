@@ -525,11 +525,12 @@ phase_platformadmin() {
     docker run --rm --network $NET -e ADMIN_ENV=staging $uvcmd "$IMAGE" $uvargs >/dev/null 2>&1
     check "refuses to start with no admin secrets" "$([ $? != 0 ] && echo yes)" yes
     for bad in "JWT_SECRET_KEY=$showjwt" "SECRETS_MASTER_KEY=$MT_KEY" "CONTROL_PLANE_DATABASE_URL=$owner_url" "DATABASE_URL=$URL/vqv_single" "SECRETS_BACKEND=local"; do
-        o="$(docker run --rm --network $NET $admin_env -e "$bad" $uvcmd "$IMAGE" $uvargs 2>&1)"
-        check "refuses to start holding ${bad%%=*}" "$(echo "$o" | grep -c 'must not hold')" 1
+        o="$(docker run --rm --network $NET $admin_env -e "$bad" $uvcmd "$IMAGE" $uvargs 2>&1)"; rc=$?
+        check "refuses to start holding ${bad%%=*}" "$([ $rc != 0 ] && echo "$o" | grep -q 'must not hold' && echo yes)" yes
+        check "  refusal doesn't print the value" "$(echo "$o" | grep -cF "${bad#*=}")" 0
     done
-    o="$(docker run --rm --network $NET -e ADMIN_ENV=staging -e ADMIN_DATABASE_URL=$owner_url -e ADMIN_JWT_SECRET_KEY=$adminjwt -e ADMIN_MFA_ENCRYPTION_KEY=$mfakey $uvcmd "$IMAGE" $uvargs 2>&1)"
-    check "refuses to run as a powerful database role" "$(echo "$o" | grep -c 'privileges it must not have')" 1
+    o="$(docker run --rm --network $NET -e ADMIN_ENV=staging -e ADMIN_DATABASE_URL=$owner_url -e ADMIN_JWT_SECRET_KEY=$adminjwt -e ADMIN_MFA_ENCRYPTION_KEY=$mfakey $uvcmd "$IMAGE" $uvargs 2>&1)"; rc=$?
+    check "refuses to run as a powerful database role" "$([ $rc != 0 ] && echo "$o" | grep -q 'privileges it must not have' && echo yes)" yes
     docker run --rm --network $NET $admin_env -e ADMIN_COOKIE_SECURE=false $uvcmd "$IMAGE" $uvargs >/dev/null 2>&1
     check "refuses insecure cookies outside development" "$([ $? != 0 ] && echo yes)" yes
 
