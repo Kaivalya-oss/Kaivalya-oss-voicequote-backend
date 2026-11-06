@@ -1,44 +1,64 @@
 # Docker Build
 
-Build from a clean export of a commit, not from a working folder. The repository has no `.dockerignore`, so a working-folder build copies whatever is present into the image.
-
 ## Verified build
 
-Image `voicequote-backend:44550ea`, id `sha256:51af1a4ae2da…`, 470 MB, from commit `44550ea3a3b4dc210ffe378568a9745dcdfc3809`, built 2026-11-07. Base image `python:3.13-slim@sha256:09a17cad0266…`.
+Image `voicequote-backend:3f4fb8e`, id `5ecc7cdce036`, 451 MB, from commit `3f4fb8e7b0328ba4730f243b919f3f8697906c09`, built 2026-11-07. Test image `voicequote-backend:3f4fb8e-dev`, id `cc06746bd1b2`.
 
 ```bash
-# From SE_Project. The -c flags keep Linux line endings even on a Windows machine.
-mkdir -p /tmp/vq-build
-git -c core.autocrlf=false -c core.eol=lf archive 44550ea backend | tar -x -C /tmp/vq-build
-cd /tmp/vq-build/backend
-docker build --progress=plain \
-  --label org.opencontainers.image.revision=44550ea3a3b4dc210ffe378568a9745dcdfc3809 \
-  -t voicequote-backend:44550ea .
+# From SE_Project. A plain export is safe: .gitattributes keeps LF on every platform.
+mkdir -p ../vq-build
+git archive 3f4fb8e backend | tar -x -C ../vq-build
+cd ../vq-build/backend
+docker build --label org.opencontainers.image.revision=$(git -C ../../SE_Project rev-parse 3f4fb8e) -t voicequote-backend:3f4fb8e .
+docker build --target dev -t voicequote-backend:3f4fb8e-dev .
 ```
 
-Build time was about 2 minutes on this machine. The only build warning is cosmetic (`FromAsCasing` on `as builder`).
+The default target is the production image. The `dev` target adds tests, `pytest` and the seed script, and is never deployed.
 
 ## Verified contents
 
 | Check | Result |
 | --- | --- |
-| `.env`, `.venv`, `.git`, credentials, keys, secrets | None found in `/app` or elsewhere outside system paths |
-| Secrets in image layers or config | None (`docker history`, image environment) |
-| Customer files | None (`generated_pdfs`, `uploads` hold only `.gitkeep`) |
-| Compilers and tools | No gcc, make, git, ssh or wget. `curl` is present for the health check |
-| Runtime user | `appuser` (uid 1000), not root |
-| `start.sh` line endings | LF, 0 carriage returns |
-| Python dependencies | 64 packages, `pip check` clean. `pip-audit`: no known vulnerabilities on 2026-11-07. OS packages not scanned |
-| Exact versions | `backend/scripts/verify/image-freeze-44550ea.txt` |
+| `/app` holds only | `alembic`, `alembic_control`, their `.ini` files, `app`, `scripts/create_admin.py`, `generated_pdfs`, `uploads` |
+| Absent | `.env`, `.venv`, `.git`, tests, `seed.py`, compose files, Dockerfile, `pytest` |
+| Real credential values | None in any of 12,098 files across all layers, or in the image configuration (checked by value, against the real `.env` and the running container) |
+| Secret formats, private keys | None in `/app` |
+| Runtime user | `appuser` (uid 1000), with a home directory |
+| Writable by runtime user | Only `generated_pdfs` and `uploads`. Code and dependencies are root-owned |
+| Tools | No gcc, make, git, ssh, wget or nc. `curl` remains for the health check |
+| Line endings | 0 carriage returns in code |
+| Working-folder build context | `.dockerignore` keeps out `.env`, `.venv`, test keys, caches and customer files (tested from a real working folder) |
 
-## Known build problems
+The image does contain the published development passwords, as strings in `app/core/dev_accounts.py`, because the app needs them to refuse them. They are public already, and grant nothing outside development.
 
-| Problem | Effect | Fix |
+## Reproducibility
+
+| Check | Result | Status |
 | --- | --- | --- |
-| No `.dockerignore` | A working-folder build copies `.venv` (264 MB), `.saas-test-certs` (test private keys) and any local files. `backend-backend:latest` contains a `.venv` this way | Add a `.dockerignore` |
-| No `.gitattributes`, `core.autocrlf=true` here | A Windows checkout or plain `git archive` gives `start.sh` CRLF endings, confirmed on this machine. The effect on `sh` was not run, but CRLF normally breaks `set -e` | Add `*.sh text eol=lf` |
-| `start.sh` is mode 100644 in git | Harmless today: the image runs `sh scripts/start.sh`. It showed as executable in this image only because of the Windows build context | Set mode 100755 |
-| Unpinned dependencies (`>=`) and base tag | A later build can differ, so builds are not reproducible | Commit a lock file and pin the base digest |
-| Tests, `pytest` and `docker-compose.yml` (with a dev password) are in the image | Extra attack surface, and the password is a local development value | Exclude with `.dockerignore`, separate dev requirements |
-| `/app` and `/opt/venv` writable by the runtime user | A compromised process could alter code | Make them root-owned, read-only |
-| No home directory for `appuser` | Tools expecting `$HOME` can fail. The app itself is unaffected | Create one, or set `HOME` |
+| Base image pinned by digest (`python:3.13-slim@sha256:09a17cad0266…`) | All `FROM` lines | PASS |
+| Image actually built on that base | Its layers begin with the pinned base's layers | PASS |
+| Wrong base digest | Build fails, no image produced | PASS |
+| Dependencies locked with hashes (58 runtime, 6 test) | `requirements.txt`, `requirements-dev.txt` | PASS |
+| Image holds exactly the locked packages | `pip freeze` matches the lock, 58 of 58 | PASS |
+| Wrong hash | `pip` refuses, while the correct hash installs on the same network | PASS |
+| Missing hash | `pip` refuses | PASS |
+| Tampered lock in a real `docker build` | Build fails with `DO NOT MATCH THE HASHES`, no image produced | PASS |
+| `--no-cache` rebuild | Every file in `/app` and `/opt/venv` identical, excluding `__pycache__` | PASS |
+| Bit-for-bit identical image | **No.** Image ids differ, because layers carry timestamps | PARTIAL |
+| OS packages | `apt` versions are not pinned. They matched today, but can change with Debian updates | PARTIAL |
+
+OS package scanning has still not been done. `pip-audit` last ran on the same locked versions (no known vulnerabilities on 2026-11-07).
+
+## Updating dependencies
+
+Edit `requirements.in` or `requirements-dev.in`, then on Python 3.13:
+
+```bash
+pip-compile --generate-hashes --allow-unsafe --strip-extras requirements.in
+```
+
+```bash
+pip-compile --generate-hashes --allow-unsafe --strip-extras requirements-dev.in
+```
+
+Rebuild, then rerun `scripts/verify/verify_image.sh all`. To change the base image, update the digest on both `FROM python` lines.

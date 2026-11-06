@@ -1,126 +1,176 @@
 # Deployment Verification
 
-Results for image `voicequote-backend:44550ea`, tested 2026-11-07. **PASS** means verified by an actual test, **PARTIAL** means implemented but not fully verified, and **BLOCKED** means it needs external configuration or more implementation.
+Results for image `voicequote-backend:3f4fb8e`, tested 2026-11-07 on isolated test databases only. **PASS** means verified by an actual test, **PARTIAL** means implemented but not fully verified, and **BLOCKED** means it needs external configuration or more implementation.
 
 This does not establish production readiness. See Deployment blockers.
 
-## Isolation of the test harness
+Reproduce with:
 
-`backend/scripts/verify/docker-compose.verify.yml` creates throwaway databases on an internal Docker network with no published ports. All data is in tmpfs.
+```bash
+docker run --rm -u 0 --network none -v <certs>:/out --entrypoint python voicequote-backend:3f4fb8e-dev scripts/gen_saas_test_certs.py /out
+```
 
-| Check | Result |
+```bash
+CERT_DIR=<certs> docker compose -p vqv -f scripts/verify/docker-compose.verify.yml up -d --wait
+```
+
+```bash
+IMAGE=voicequote-backend:3f4fb8e DEV_IMAGE=voicequote-backend:3f4fb8e-dev ROLLBACK_IMAGE=voicequote-backend:30d80ca CERT_DIR=<certs> scripts/verify/verify_image.sh all
+```
+
+```bash
+docker compose -p vqv -f scripts/verify/docker-compose.verify.yml down -v
+```
+
+## Deploying a release
+
+Starting a container never changes a database. A deployment has these separate steps, in order:
+
+1. **Back up** every database being migrated (`DEPLOYMENT_ROLLBACK.md`).
+2. **Migrate the central database** (multi-tenant) or the showroom database (single-showroom).
+3. **Create the first account**, if this is a new installation.
+4. **Start the new image.** It refuses to start if the schema doesn't match, and names the command to run.
+5. **Migrate each existing showroom database** (multi-tenant).
+
+### Migrating the central database
+
+```bash
+docker run --rm --network <network> --env-file <env file> --entrypoint alembic voicequote-backend:3f4fb8e -c alembic_control.ini upgrade head
+```
+
+### Migrating a single-showroom database
+
+```bash
+docker run --rm --network <network> --env-file <env file> --entrypoint alembic voicequote-backend:3f4fb8e upgrade head
+```
+
+### Migrating showroom databases (multi-tenant)
+
+- **New showroom:** the Owner connects the database in the setup screen (`POST /api/v1/platform/tenants/current/database/connect`). It is migrated and verified as part of connecting.
+- **Existing showroom:** the Owner presses **Run migrations** (`POST /api/v1/platform/tenants/current/database/migrate`). Each is separate and recorded in `tenant_migration_runs`.
+
+**There is no operator command to migrate all showrooms.** See Defects.
+
+## Creating the first account
+
+No account is ever created automatically, and there is no default password.
+
+### Single-showroom: an operator runs `create_admin.py`
+
+Put the values in a protected file that is deleted afterwards, so the password isn't left in shell history or in `docker inspect`:
+
+```bash
+docker run --rm --network <network> --env-file <env file> --env-file <admin file> --entrypoint python voicequote-backend:3f4fb8e scripts/create_admin.py
+```
+
+The admin file holds `ADMIN_EMAIL`, `ADMIN_FULL_NAME` and `ADMIN_PASSWORD`. Or leave `ADMIN_PASSWORD` out and add `-it` to be prompted. The script:
+
+- Creates the staff roles if they are missing, and an active `ADMIN`.
+- Refuses published emails and passwords in every environment, and passwords under 12 characters.
+- Refuses to overwrite an existing account without `--reset-password`.
+
+This account is an `ADMIN`, not a `DEALER_OWNER`. An administrator assigns other roles with `PUT /api/v1/users/{id}/role`, after the person registers and is approved.
+
+### Multi-tenant: the Owner registers
+
+The Owner registers at `POST /api/v1/platform/showrooms/register` with their own password, which creates the showroom and their `OWNER` membership. Staff join by invitation. **PARTIAL:** nothing verifies email ownership yet, so someone can register with an address they don't own. See `AUTH_HARDENING_PLAN.md`.
+
+## Results
+
+### Isolation
+
+| Check | Status |
 | --- | --- |
-| Live database, live backend, Docker host and Gmail from the test network | Unreachable (each connection attempt failed) |
-| Real `.env` values in test containers | None. No `env_file`; SMTP, Gemini and WhatsApp settings empty inside the app |
-| Source mounted into the app | None (`Mounts` empty), so code came from the image |
-| Live database afterwards | Same schema `a1c4e7d2f903`, no new rows, only its own backend connected |
+| Internal Docker network with no published ports, data in tmpfs | PASS |
+| No real `.env` values in test containers. Test passwords no longer reuse the live password | PASS |
+| Live containers afterwards: same start time, 0 restarts, schema `a1c4e7d2f903` | PASS |
 
-## Single-showroom mode (`MULTI_TENANT_ENABLED=false`, `APP_ENV=production`)
+### Production startup safety
+
+| Check | Status |
+| --- | --- |
+| Refuses to start on an unmigrated database, and creates no tables | PASS |
+| Migrating creates no accounts | PASS |
+| Starting and restarting creates no accounts or roles | PASS |
+| `SEED_DEV_DATA=true` outside development: server refuses to start | PASS |
+| Seed script absent from the production image | PASS |
+| Seed refused in the test image for `production`, `staging`, `prod` | PASS |
+| All 5 default accounts refused on an empty database | PASS |
+| All 5 default accounts refused on a database that already holds them | PASS |
+| Valid token for a default account refused | PASS |
+| All 5 refused on multi-tenant platform login | PASS |
+| `create_admin.py` refuses published and weak values, then creates a working administrator | PASS |
+| Password never reaches the logs | PASS |
+
+### Application
 
 | Test | Status |
 | --- | --- |
-| Start on an empty database: migrations, seed, healthy | PASS (about 33 s) |
-| API checks in `verify_single.py`: auth, permissions, customers, CASH and FINANCE, comparison, history, details, PDF, leads, dashboards, export | PASS, 37 of 37 |
-| WhatsApp and email with no credentials: simulated, not claimed as delivered | PASS |
+| Single-showroom black-box API, `APP_ENV=production`, no seeded data | PASS, 54 of 54 |
+| Single-showroom pytest in the test image | PASS, 107 passed, 21 skipped because build files aren't in the image |
+| Those build-file tests, run from the repository | PASS, 19 passed, 1 skipped because the image has no git. That one was checked with `git check-attr` on the host |
+| Multi-tenant black-box setup and isolation | PASS, 24 of 24 |
+| Multi-tenant pytest in the test image | PASS, 98 of 98 |
+| No customer data or credentials in the central database or logs | PASS for the markers tested |
 | Real WhatsApp or email delivery | Not tested (no credentials used) |
-| Restart: no migrations re-run | PASS |
-| Graceful stop (SIGTERM reaches uvicorn as PID 1) | PASS, about 2 s, exit 0 |
-| Single-showroom pytest suite inside the image | PASS, 66 of 66 |
-
-## Multi-tenant mode
-
-| Test | Status |
-| --- | --- |
-| Refuses to start in production with local secrets, or with private hosts allowed | PASS |
-| Control-plane migrations and connectivity (`APP_ENV=staging`) | PASS |
-| Black-box setup: registration, membership, migrations on two TLS servers, health, routing, isolation, comparison, PDF | PASS, 24 of 24 |
-| TLS in use (`pg_stat_ssl`) | PASS on both servers |
-| No customer data or credentials in the central database or app logs | PASS for the markers tested |
-| Multi-tenant pytest suite inside the image | PASS, 80 of 80 |
-| Name resolves but database hangs | PASS, with a slow first request (see Defects) |
-| Database hostname stops resolving | PARTIAL (see Defects) |
-| Recovery after an outage; other showroom unaffected throughout | PASS |
-| Production mode with a real secrets manager | BLOCKED, none exists |
+| Production multi-tenant with a real secrets manager | BLOCKED, none exists |
 | Real cloud PostgreSQL providers | BLOCKED, none available |
 | Pooling under realistic load | PARTIAL, small bursts only |
 
-## Defects found
+### Database outage and recovery
+
+Real outages on real TLS servers, not mocks.
+
+| Scenario | Result | Status |
+| --- | --- | --- |
+| Hostname stops resolving | Every request 503 `TENANT_DB_UNAVAILABLE` in about 0.01 s, previously 422 from the second request | PASS |
+| Health check, hostname not resolving | 200 with `healthy: false`, `TENANT_DB_HOST_UNRESOLVED`, stored centrally | PASS |
+| Server hangs (paused) | 503 in 7.0 s, then 5.0 s, previously 32 s | PASS |
+| Health check, server hangs | 200 with `healthy: false` in 5.0 s | PASS |
+| Server stopped | Clear 503, no details leaked | PASS |
+| Reconnect or resume | Requests served again with data intact, health clears the stored error | PASS |
+| Other showroom during every outage | 200 in about 0.02 s | PASS |
+| Outages cause no unhandled errors | 0 tracebacks | PASS |
+
+A query already running when a server hangs can still wait for the 30 s command timeout. That was not changed.
+
+### Migrations
+
+| Check | Status |
+| --- | --- |
+| Control-plane migration is explicit, logs progress, uses its own version table | PASS |
+| Central database holds no business tables, and showrooms hold no control version table | PASS |
+| New showroom migrated when connected | PASS |
+| Existing showroom on an older schema: app restart doesn't migrate it | PASS |
+| Existing showroom migrated by its Owner: data kept, recorded centrally | PASS |
+| Migrating one showroom leaves the other showroom and the central version unchanged | PASS |
+| New image on an older single-showroom database: refuses, changes nothing | PASS |
+| Failed upgrade (forced column conflict): stays at old version, no partial columns | PASS |
+| Successful upgrade and downgrade: table checksums identical | PASS |
+| Upgrades contain no drops (automated test) | PASS |
+
+`8d2e…` and `a1c4…` change data by design, backfilling customer creators, follow-up dates and `payment_mode`.
+
+## Defects
 
 | Defect | Severity | Detail |
 | --- | --- | --- |
-| Default seeded accounts in production | **High** | `start.sh` runs `seed.py` in single-showroom production mode. It creates `admin@dealership.com` and others with passwords published in the repository, and login with them worked in `APP_ENV=production` |
-| Outage error when DNS fails | Medium | The first request gets 503. Later ones get 422 `TENANT_DB_HOST_UNRESOLVED`, which reads as a user error. No details leak |
-| Health check when DNS fails | Medium | Returns 422 and records no health result, because `build_engine` runs outside its error handling |
-| Hanging database | Medium | First request took 32 s (the 30 s command timeout during pre-ping); the next took 5 s. Other showrooms were unaffected |
-| Trusted `X-Forwarded-For` | Medium | `get_client_ip` trusts the header, so audit log IPs can be forged unless a proxy overwrites it |
-| Control-plane migrations not logged | Low | `alembic_control.ini` has no logging config, so a successful run prints nothing |
-
-## Migration verification
-
-| Check | Result |
-| --- | --- |
-| Control-plane migrations separate | PASS: `alembic_control/`, own version table, own URL |
-| No destructive `upgrade()` in any migration | PASS: reviewed, plus an automated test |
-| Existing data kept by `a1c4 → b2d5` | PASS: checksums of customers and quotations identical before and after |
-| Failed upgrade is atomic | PASS: forced a column conflict; version unchanged, no partial columns, server did not start. Retry succeeded after the conflict was cleared |
-| Commands target the intended database | PASS in tests. See warning |
-
-Two upgrades change data by design: `8d2e…` backfills customer creators and follow-up dates, and `a1c4…` backfills `payment_mode`.
-
-**Warning:** in single-showroom mode `start.sh` migrates whatever `DATABASE_URL` points to, automatically on start. A new image pointed at an existing database upgrades it with no approval step.
-
-### Migrating a showroom database
-
-New showroom database, as its Owner (nothing to run by hand): Database setup screen, or
-`POST /api/v1/platform/tenants/current/database/connect`.
-
-Existing showroom database at an older version, as its Owner: **Run migrations**, or
-`POST /api/v1/platform/tenants/current/database/migrate`. Take a backup first; there is no fleet-wide rollout yet.
-
-Existing single-showroom database:
-
-```bash
-pg_dump -Fc "$LIBPQ_URL" > before-migration.dump   # backup first
-docker run --rm --network <network> -e APP_ENV=production -e JWT_SECRET_KEY=<secret> \
-  -e DATABASE_URL=<asyncpg url> --entrypoint alembic voicequote-backend:44550ea upgrade head
-```
-
-Control-plane database:
-
-```bash
-docker run --rm --network <network> -e MULTI_TENANT_ENABLED=true -e APP_ENV=<env> \
-  -e JWT_SECRET_KEY=<secret> -e SECRETS_BACKEND=<backend> -e CONTROL_PLANE_DATABASE_URL=<asyncpg url> \
-  --entrypoint alembic voicequote-backend:44550ea -c alembic_control.ini upgrade head
-```
-
-The same `alembic` commands were run against test databases only, never a live one. The `pg_dump` line and these `docker run` wrappers were not run as written. In production multi-tenant mode the app refuses `SECRETS_BACKEND=local`, so the control-plane command is blocked until a real manager exists.
+| No way to migrate all showrooms | **High** | Only each Owner can migrate their own showroom. A release with a schema change depends on every Owner acting |
+| Older showroom gives a generic 500 | **High** | Until migrated, staff get `INTERNAL_SERVER_ERROR` on requests such as the customer list (`column users.central_user_id does not exist`). No details leak, and health reports `TENANT_DB_VERIFICATION_FAILED`, but staff get no useful message |
+| `X-Forwarded-For` trusted | Medium | Audit log IPs can be forged. Also blocks reliable rate limiting |
+| `JWT_SECRET_KEY` check only for exact `production` | Medium | `APP_ENV=prod` or `staging` with no secret falls back to the published development secret |
+| First hung request takes 7 s, not 5 s | Low | About 2 s beyond the connect timeout. Cause not investigated |
 
 ## Deployment blockers
 
 | Blocker | Status |
 | --- | --- |
-| Remove default seeded accounts from production startup | BLOCKED, code change |
+| Migrating all showrooms; clear error for an older schema | BLOCKED, code change |
+| Login rate limiting, email verification, password reset, safer tokens (`AUTH_HARDENING_PLAN.md`) | BLOCKED, code change |
 | Secrets manager adapter and account | BLOCKED, external |
-| HTTPS / reverse proxy | BLOCKED, external |
+| HTTPS and reverse proxy, including client IP handling | BLOCKED, external |
 | Static outbound IP | BLOCKED, external |
-| `.dockerignore`, `.gitattributes`, dependency lock | BLOCKED, code change |
-| Login rate limiting, email verification, password reset in multi-tenant mode | BLOCKED, code change |
-| Per-showroom Gmail and WhatsApp | BLOCKED, later phase |
 | Production host, central database and its backups, monitoring, log shipping | BLOCKED, not configured |
-| Security review | BLOCKED, not done |
-
-## Reproducing the tests
-
-```bash
-docker run --rm -u 0 --network none -v <certs>:/out --entrypoint python voicequote-backend:44550ea \
-  scripts/gen_saas_test_certs.py /out
-CERT_DIR=<certs> docker compose -p vqv -f scripts/verify/docker-compose.verify.yml up -d
-docker run -d --name vqv-single --network vqv_net -e APP_ENV=production -e DEBUG=False \
-  -e MULTI_TENANT_ENABLED=false -e JWT_SECRET_KEY=<random> \
-  -e DATABASE_URL=postgresql+asyncpg://postgres:vqv-test-only@postgres:5432/vqv_single \
-  voicequote-backend:44550ea
-docker run --rm -i --network vqv_net -e BASE=http://vqv-single:8000 --entrypoint python \
-  voicequote-backend:44550ea - < scripts/verify/verify_single.py
-```
-
-See `scripts/verify/verify_multitenant.py` for the multi-tenant phases. Its `down` phase checks the corrected behaviour, so against this image two checks fail until the DNS defects above are fixed: the health check response and the repeat request. Tear down with `docker compose -p vqv -f scripts/verify/docker-compose.verify.yml down -v`.
+| Per-showroom Gmail and WhatsApp | BLOCKED, later phase |
+| OS package scanning, pinned `apt` versions | BLOCKED, not done |
+| Load testing, security review | BLOCKED, not done |

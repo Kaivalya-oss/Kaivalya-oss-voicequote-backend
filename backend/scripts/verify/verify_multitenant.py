@@ -4,6 +4,10 @@ Phases, with the caller stopping and starting a showroom database between them:
   BASE=... CA_FILE=... APP_PASSWORD=... python verify_multitenant.py setup   > state.json
   STATE='<state json>' ... python verify_multitenant.py down
   STATE='<state json>' ... python verify_multitenant.py up
+  STATE='<state json>' WHICH=a|b EXPECT=<status> LIMIT=<seconds> python verify_multitenant.py probe
+  STATE='<state json>' WHICH=a|b HEALTHY=true|false CODE=<code> python verify_multitenant.py health
+  STATE='<state json>' WHICH=a|b python verify_multitenant.py observe    (prints what staff get, checks nothing)
+  STATE='<state json>' WHICH=a|b python verify_multitenant.py migrate
 """
 import json
 import os
@@ -118,12 +122,58 @@ if phase == "down":
     r = c.get(f"{A}/customers", headers=H(ta))
     check("unavailable tenant database gives a clear 503", r.status_code == 503 and r.json()["error"]["code"] == "TENANT_DB_UNAVAILABLE", r.text)
     check("unavailable error leaks nothing", not any(s in r.text for s in (PASSWORD, "vq_app", "saas-tenant-a", "asyncpg", "postgresql")))
-    check("fails within the connect timeout", time.time() - t0 < 30, time.time() - t0)
+    check("fails within the connect timeout", time.time() - t0 < 8, time.time() - t0)
     check("other showroom unaffected", "Only In B" in c.get(f"{A}/customers", headers=H(tb)).text)
     h = c.post(f"{DB}/health", headers=H(ta))
     check("health check reports the outage in a normal response", h.status_code == 200 and h.json()["data"]["healthy"] is False, h.text)
     again = c.get(f"{A}/customers", headers=H(ta))
     check("repeat request during the outage is also a 503", again.status_code == 503, f"{again.status_code} {again.text}")
+    finish()
+
+if phase == "probe":
+    token = ta if os.environ["WHICH"] == "a" else tb
+    expect, limit = int(os.environ["EXPECT"]), float(os.environ["LIMIT"])
+    for attempt in range(3):
+        t0 = time.time()
+        r = c.get(f"{A}/customers", headers=H(token))
+        took = time.time() - t0
+        print(f"INFO  showroom {os.environ['WHICH']} request {attempt + 1}: {r.status_code} in {took:.2f}s", file=log)
+        check(f"status {expect} within {limit}s", r.status_code == expect and took < limit, f"{r.status_code} {took:.2f}s {r.text[:100]}")
+        if expect == 503:
+            check("error is TENANT_DB_UNAVAILABLE", r.json()["error"]["code"] == "TENANT_DB_UNAVAILABLE", r.text[:100])
+    finish()
+
+if phase == "health":
+    token = ta if os.environ["WHICH"] == "a" else tb
+    t0 = time.time()
+    r = c.post(f"{DB}/health", headers=H(token))
+    print(f"INFO  health {r.status_code} in {time.time() - t0:.2f}s: {r.text[:160]}", file=log)
+    check("health responds normally", r.status_code == 200, r.text)
+    data = r.json()["data"]
+    check(f"healthy is {os.environ['HEALTHY']}", str(data["healthy"]).lower() == os.environ["HEALTHY"], data)
+    if os.environ.get("CODE"):
+        check(f"error code {os.environ['CODE']}", data["error_code"] == os.environ["CODE"], data)
+    finish()
+
+if phase == "observe":
+    token = ta if os.environ["WHICH"] == "a" else tb
+    r = c.get(f"{A}/customers", headers=H(token))
+    print(f"INFO  customer list on older schema: {r.status_code} {r.text[:120]}", file=log)
+    v = c.get(f"{A}/vehicles", headers=H(token))
+    print(f"INFO  vehicle list on older schema: {v.status_code}", file=log)
+    q = c.get(f"{A}/quotations", headers=H(token))
+    print(f"INFO  quotation list on older schema: {q.status_code} {q.text[:120]}", file=log)
+    u = c.get(f"{P}/me", headers=H(token))
+    print(f"INFO  account details on older schema: {u.status_code}", file=log)
+    sys.exit(0)
+
+if phase == "migrate":
+    token = ta if os.environ["WHICH"] == "a" else tb
+    r = c.post(f"{DB}/migrate", headers=H(token))
+    print(f"INFO  migrate: {r.status_code}", file=log)
+    check("migrate succeeded", r.status_code == 200, r.text)
+    check("schema reported at head", r.json()["data"]["schema_version"] == "b2d5f8a1c604", r.text)
+    check("response holds no credentials", PASSWORD not in r.text)
     finish()
 
 if phase == "up":

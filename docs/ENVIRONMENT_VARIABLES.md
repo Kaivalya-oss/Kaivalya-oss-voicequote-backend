@@ -8,9 +8,10 @@ The source of truth is `backend/app/core/config.py`. No value here is a producti
 | --- | --- | --- | --- | --- |
 | `APP_ENV` | `development` | Yes in production | | `production` turns on the startup safety checks |
 | `DEBUG` | `True` | Set `False` in production | | Controls log level. Default is unsafe for production |
-| `APP_NAME`, `HOST`, `PORT` | see config | | | `start.sh` always binds `0.0.0.0:8000`, ignoring these two |
-| `DATABASE_URL` | local dev URL | Yes, single-showroom | Yes | asyncpg URL. `start.sh` migrates this database on start |
-| `TEST_DATABASE_URL` | local dev URL | Tests only | Yes | Must differ from `DATABASE_URL`, or tests refuse to run. `backend/docker-compose.yml` wrongly sets them equal |
+| `APP_NAME`, `HOST`, `PORT` | see config | | | The image always binds `0.0.0.0:8000`, ignoring these two |
+| `DATABASE_URL` | local dev URL | Yes, single-showroom | Yes | asyncpg URL. Migrated only by an explicit command |
+| `TEST_DATABASE_URL` | local dev URL | Tests only | Yes | Must differ from `DATABASE_URL`, or tests refuse to run |
+| `SEED_DEV_DATA` | `false` | Local work only | | With `APP_ENV` of `development` or `test`, lets `scripts/seed.py` create the published accounts. The app refuses to start if it is set anywhere else |
 | `JWT_SECRET_KEY` | empty | Yes in production | Yes | 32+ characters and not a published value, or the app refuses to start |
 | `JWT_ALGORITHM` | `HS256` | | | |
 | `JWT_ACCESS_TOKEN_EXPIRE_MINUTES`, `JWT_REFRESH_TOKEN_EXPIRE_DAYS` | `60`, `7` | | | |
@@ -30,9 +31,20 @@ The source of truth is `backend/app/core/config.py`. No value here is a producti
 | `SAAS_DEFAULT_PLAN_ID`, `SAAS_DEFAULT_PLAN_AMOUNT`, `SAAS_DEFAULT_CURRENCY` | `standard-monthly`, `0.00`, `INR` | Pricing not decided | | |
 | `TENANT_DB_POOL_SIZE`, `TENANT_DB_MAX_OVERFLOW` | `2`, `2` | | | Per showroom, per worker |
 | `TENANT_DB_POOL_TIMEOUT`, `TENANT_DB_POOL_RECYCLE` | `10`, `300` | | | Seconds |
-| `TENANT_DB_CONNECT_TIMEOUT`, `TENANT_DB_COMMAND_TIMEOUT` | `5`, `30` | | | Seconds |
+| `TENANT_DB_CONNECT_TIMEOUT`, `TENANT_DB_COMMAND_TIMEOUT` | `5`, `30` | | | Seconds. The connect timeout also bounds DNS and the check on a pooled connection |
+| `TENANT_DB_HEALTH_TIMEOUT` | `10` | | | Seconds, for the whole health check |
 | `TENANT_DB_ENGINE_TTL`, `TENANT_DB_IDLE_SECONDS` | `900`, `600` | | | Seconds |
 | `TENANT_DB_MAX_ENGINES`, `TENANT_DB_MAX_CONCURRENT_SESSIONS`, `TENANT_DB_SCHEDULER_CONCURRENCY` | `50`, `100`, `5` | | | Per worker |
+
+## Administrator setup
+
+Read only by `scripts/create_admin.py`, never by the server. Keep them out of the server's environment.
+
+| Variable | Secret | Notes |
+| --- | --- | --- |
+| `ADMIN_EMAIL` | | Published development emails are refused |
+| `ADMIN_FULL_NAME` | | Required for a new account |
+| `ADMIN_PASSWORD` | Yes | 12+ characters; published passwords are refused. Prompted for when unset and a terminal is attached |
 
 ## External services
 
@@ -57,7 +69,7 @@ The source of truth is `backend/app/core/config.py`. No value here is a producti
 
 | Area | Current state |
 | --- | --- |
-| Health checks | `GET /health` (image `HEALTHCHECK`, 30 s) and `GET /health/db`. The 5 s start period is shorter than first start (about 33 s), but the container did become healthy |
+| Health checks | `GET /health` (image `HEALTHCHECK`, 30 s) and `GET /health/db`. Start period is 15 s, and migrations no longer run during startup |
 | Workers | One uvicorn process, not configured. **More workers would run scheduler jobs in each**, and multiply connection limits |
 | Logging | Plain text to stdout, no shipping or retention configured |
 | Shutdown | SIGTERM handled: scheduler stops, pools close, exit 0 (tested) |

@@ -1,11 +1,19 @@
-"""Black-box checks of a running image in single-showroom mode. Usage: BASE=http://host:8000 python verify_single.py"""
+"""Black-box checks of a running image in single-showroom mode, on a database with no seeded data.
+
+Usage: BASE=http://host:8000 ADMIN_EMAIL=... ADMIN_PASSWORD=... python verify_single.py
+The administrator comes from scripts/create_admin.py, as in a real deployment.
+"""
 import os
 import sys
 import time
+import uuid
 
 import httpx
 
 BASE = os.environ["BASE"]
+ADMIN_EMAIL = os.environ["ADMIN_EMAIL"]
+ADMIN_PASSWORD = os.environ["ADMIN_PASSWORD"]
+STAFF_PASSWORD = f"Verify-{uuid.uuid4().hex}"
 A = f"{BASE}/api/v1"
 results = []
 
@@ -34,17 +42,39 @@ env = c.get(f"{BASE}/health").json().get("environment")
 print(f"INFO  reported environment: {env}")
 
 # Authentication
-check("wrong password rejected", login("sales@dealership.com", "wrong").status_code == 401)
+for email, password in (
+    ("admin@dealership.com", "AdminPass123!"),
+    ("owner@dealership.com", "OwnerPass123!"),
+    ("sales@dealership.com", "SalesPass123!"),
+    ("finance@dealership.com", "FinancePass123!"),
+    ("inventory@dealership.com", "InventoryPass123!"),
+):
+    check(f"default account refused: {email}", login(email, password).status_code == 401)
+check("wrong password rejected", login(ADMIN_EMAIL, "wrong-password-value").status_code == 401)
 check("no token rejected", c.get(f"{A}/customers").status_code == 401)
 check("tampered token rejected", c.get(f"{A}/customers", headers=H("abc.def.ghi")).status_code == 401)
-r = login("sales@dealership.com", "SalesPass123!")
+r = login(ADMIN_EMAIL, ADMIN_PASSWORD)
 check("login", r.status_code == 200, r.text)
-sales = r.json()["access_token"]
+admin = r.json()["access_token"]
 refresh = c.post(f"{A}/auth/refresh", json={"refresh_token": r.json()["refresh_token"]})
 check("token refresh", refresh.status_code == 200, refresh.text)
-admin = login("admin@dealership.com", "AdminPass123!").json()["access_token"]
-finance = login("finance@dealership.com", "FinancePass123!").json()["access_token"]
-print("INFO  seeded default accounts can sign in (see security findings)")
+
+
+def add_staff(role):
+    """Register, approve and assign a role, as a manager does."""
+    email = f"{role.lower()}-{uuid.uuid4().hex[:8]}@example.com"
+    r = c.post(f"{A}/auth/register", json={"email": email, "full_name": f"Verify {role}", "password": STAFF_PASSWORD})
+    check(f"staff registration ({role})", r.status_code in (200, 201), r.text)
+    check(f"new account waits for approval ({role})", login(email, STAFF_PASSWORD).status_code == 401)
+    user_id = r.json()["data"]["id"]
+    check(f"staff approval ({role})", c.post(f"{A}/users/{user_id}/activate", headers=H(admin)).status_code == 200)
+    if role != "SALES_EXECUTIVE":
+        check(f"role assignment ({role})", c.put(f"{A}/users/{user_id}/role", headers=H(admin), json={"role_name": role}).status_code == 200)
+    return login(email, STAFF_PASSWORD).json()["access_token"]
+
+
+sales = add_staff("SALES_EXECUTIVE")
+finance = add_staff("FINANCE_EXECUTIVE")
 
 # Permissions
 phone = "9" + str(int(time.time() * 1000))[-9:]
@@ -62,8 +92,16 @@ check("customer list", any(x["id"] == cust["id"] for x in c.get(f"{A}/customers?
 check("duplicate phone refused", c.post(f"{A}/customers", headers=H(sales), json=body).status_code == 409)
 
 # Quotations
+check("database starts with no vehicles or customers from a seed", c.get(f"{A}/vehicles", headers=H(sales)).json()["items"] == [])
+brand = c.post(f"{A}/vehicles/catalog/brands", headers=H(admin), json={"name": "Verify Brand"})
+check("catalogue: brand", brand.status_code == 201, brand.text)
+model = c.post(f"{A}/vehicles/catalog/models", headers=H(admin), json={"brand_id": brand.json()["data"]["id"], "name": "Verify Model"})
+check("catalogue: model", model.status_code == 201, model.text)
+for name, price in (("VV-One", 90000), ("VV-Two", 95000)):
+    v = c.post(f"{A}/vehicles", headers=H(admin), json={"model_id": model.json()["data"]["id"], "name": name, "code": name, "ex_showroom_price": price, "insurance_price": 1000, "rto_price": 1000})
+    check(f"catalogue: vehicle {name}", v.status_code == 201, v.text)
 variants = c.get(f"{A}/vehicles?page_size=2", headers=H(sales)).json()["items"]
-check("seeded vehicle catalogue present", len(variants) == 2)
+check("vehicle catalogue readable by sales", len(variants) == 2)
 FINANCE_KEYS = {"emi", "down_payment", "loan_amount", "loan_tenure", "interest_rate"}
 
 
