@@ -2,7 +2,9 @@ from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.dev_accounts import is_refused_dev_credential
 from app.core.exceptions import BadRequestException, ConflictException, ForbiddenException, UnauthorizedException
+from app.core.logging import logger
 from app.core.permissions import RoleEnum
 from app.core.security import create_access_token, create_refresh_token, decode_token, hash_password, verify_password
 from app.models.user import User
@@ -21,6 +23,9 @@ class AuthService:
         self.audit_repo = AuditLogRepository(session)
 
     async def register(self, req: RegisterRequest, ip_address: Optional[str] = None) -> User:
+        if is_refused_dev_credential(req.email, req.password):
+            raise BadRequestException("CREDENTIAL_NOT_ALLOWED", "This email or password cannot be used.")
+
         existing = await self.user_repo.get_by_email(req.email)
         if existing:
             raise ConflictException(
@@ -72,6 +77,10 @@ class AuthService:
         if not verify_password(req.password, user.password_hash):
             raise UnauthorizedException("Invalid email or password.")
 
+        if is_refused_dev_credential(user.email, req.password):
+            logger.warning(f"Refused sign-in for user {user.id}: development account or published password.")
+            raise UnauthorizedException("Invalid email or password.")
+
         if not user.is_active:
             if user.last_login_at is None:
                 raise UnauthorizedException(
@@ -112,7 +121,7 @@ class AuthService:
 
         user_id = int(payload.get("sub", 0))
         user = await self.user_repo.get_by_id(user_id)
-        if not user or not user.is_active:
+        if not user or not user.is_active or is_refused_dev_credential(user.email):
             raise UnauthorizedException("User no longer exists or is inactive.")
 
         extra_claims = {

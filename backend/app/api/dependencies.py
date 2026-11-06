@@ -4,6 +4,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.dev_accounts import is_refused_dev_credential
 from app.core.exceptions import ForbiddenException, UnauthorizedException
 from app.core.security import decode_token
 from app.database.dependencies import get_db
@@ -50,6 +51,8 @@ async def get_current_user(
         raise UnauthorizedException("User not found.")
     if not user.is_active:
         raise UnauthorizedException("User account is inactive.")
+    if is_refused_dev_credential(user.email):
+        raise UnauthorizedException("This account cannot be used in this environment.")
 
     return user
 

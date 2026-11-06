@@ -8,6 +8,8 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from sqlalchemy import select
+from app.core.config import settings
+from app.core.dev_accounts import DEV_ACCOUNTS, dev_accounts_permitted
 from app.core.logging import logger
 from app.core.security import hash_password
 from app.database.session import AsyncSessionLocal
@@ -20,6 +22,11 @@ from app.models.lead import Lead, LeadStatusHistory
 
 
 async def seed():
+    if not (settings.SEED_DEV_DATA and dev_accounts_permitted()):
+        raise SystemExit(
+            "Refusing to seed: this creates accounts with published passwords. "
+            "It needs SEED_DEV_DATA=true and APP_ENV=development or test."
+        )
     logger.info("Starting database seed script...")
     async with AsyncSessionLocal() as session:
         # 1. Seed Roles
@@ -42,15 +49,8 @@ async def seed():
             roles_map[name] = role
 
         # 2. Seed Default Users (Development credentials)
-        users_data = [
-            ("admin@dealership.com", "Admin User", "9876500001", "AdminPass123!", "ADMIN"),
-            ("owner@dealership.com", "Rajesh Singhania (Owner)", "9876500002", "OwnerPass123!", "DEALER_OWNER"),
-            ("sales@dealership.com", "Vikram Malhotra (Sales)", "9876500003", "SalesPass123!", "SALES_EXECUTIVE"),
-            ("finance@dealership.com", "Ananya Deshmukh (Finance)", "9876500004", "FinancePass123!", "FINANCE_EXECUTIVE"),
-            ("inventory@dealership.com", "Suresh Kumar (Inventory)", "9876500005", "InventoryPass123!", "INVENTORY_MANAGER"),
-        ]
         users_map = {}
-        for email, name, phone, pwd, r_name in users_data:
+        for email, name, phone, pwd, r_name in DEV_ACCOUNTS:
             stmt = select(User).where(User.email == email)
             user = (await session.execute(stmt)).scalars().first()
             if not user:
@@ -64,7 +64,7 @@ async def seed():
                 )
                 session.add(user)
                 await session.flush()
-                logger.info(f"Created user: {email} ({r_name}) [Password: {pwd}]")
+                logger.info(f"Created user: {email} ({r_name})")
             users_map[email] = user
 
         # 3. Seed Vehicle Brands

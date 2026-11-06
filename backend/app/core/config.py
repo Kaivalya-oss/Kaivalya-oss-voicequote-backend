@@ -5,6 +5,9 @@ from typing import List, Union
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# The only environments that may use the published development accounts. See app/core/dev_accounts.py.
+DEV_ENVIRONMENTS = frozenset({"development", "test"})
+
 # Used only outside production when JWT_SECRET_KEY is not configured.
 DEV_FALLBACK_JWT_SECRET = "dev-only-insecure-jwt-secret-do-not-use-in-production"
 
@@ -104,6 +107,9 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "uploads"
     PDF_STORAGE_DIR: str = "generated_pdfs"
 
+    # Lets scripts/seed.py create the development accounts and sample data. Development and tests only.
+    SEED_DEV_DATA: bool = False
+
     @model_validator(mode="after")
     def enforce_jwt_secret(self) -> "Settings":
         secret = self.JWT_SECRET_KEY.strip()
@@ -114,6 +120,12 @@ class Settings(BaseSettings):
                 )
         elif not secret:
             self.JWT_SECRET_KEY = DEV_FALLBACK_JWT_SECRET
+        return self
+
+    @model_validator(mode="after")
+    def enforce_no_dev_seeding(self) -> "Settings":
+        if self.SEED_DEV_DATA and self.APP_ENV.strip().lower() not in DEV_ENVIRONMENTS:
+            raise ValueError("SEED_DEV_DATA is only allowed when APP_ENV is development or test.")
         return self
 
     @model_validator(mode="after")

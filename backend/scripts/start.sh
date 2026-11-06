@@ -6,6 +6,5 @@ if [ "$MULTI_TENANT_ENABLED" = "true" ]; then
     alembic -c alembic_control.ini upgrade head
 else
     alembic upgrade head
-    python scripts/seed.py
 fi
 exec uvicorn app.main:app --host 0.0.0.0 --port 8000

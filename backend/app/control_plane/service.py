@@ -45,6 +45,7 @@ from app.core.exceptions import (
     UnauthorizedException,
 )
 from app.core.logging import logger
+from app.core.dev_accounts import is_refused_dev_credential
 from app.core.security import create_access_token, create_refresh_token, decode_token, hash_password, verify_password
 from app.core.tenant_context import PLATFORM_SCOPE, TenantContext
 
@@ -157,6 +158,8 @@ class ControlPlaneService:
 
     async def register_showroom(self, req: RegisterShowroomRequest) -> TokenPairResponse:
         email = req.email.lower()
+        if is_refused_dev_credential(email, req.password):
+            raise BadRequestException("CREDENTIAL_NOT_ALLOWED", "This email or password cannot be used.")
         existing = (
             await self.session.execute(select(PlatformUser).where(PlatformUser.email == email))
         ).scalar_one_or_none()
@@ -202,6 +205,8 @@ class ControlPlaneService:
         ).scalar_one_or_none()
         valid = verify_password(password, user.password_hash if user and user.password_hash else _DUMMY_HASH)
         if not user or not user.password_hash or not valid or user.account_status != AccountStatus.ACTIVE.value:
+            raise UnauthorizedException("Invalid email or password.")
+        if is_refused_dev_credential(user.email, password):
             raise UnauthorizedException("Invalid email or password.")
         memberships = await self.active_memberships(user.id)
         # One showroom: select it. Several: the user must choose.
@@ -303,6 +308,8 @@ class ControlPlaneService:
         if user.account_status == AccountStatus.INVITED.value:
             if not req.password or not req.full_name:
                 raise BadRequestException("ACCOUNT_DETAILS_REQUIRED", "Enter your name and choose a password.")
+            if is_refused_dev_credential(user.email, req.password):
+                raise BadRequestException("CREDENTIAL_NOT_ALLOWED", "This email or password cannot be used.")
             user.full_name = req.full_name.strip()
             user.password_hash = hash_password(req.password)
             user.account_status = AccountStatus.ACTIVE.value
