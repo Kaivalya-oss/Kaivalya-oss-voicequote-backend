@@ -21,6 +21,11 @@ def control_sessionmaker() -> async_sessionmaker[AsyncSession]:
     return _sessionmaker
 
 
+def control_engine() -> AsyncEngine:
+    control_sessionmaker()
+    return _engine
+
+
 async def get_control_db() -> AsyncGenerator[AsyncSession, None]:
     async with control_sessionmaker()() as session:
         yield session

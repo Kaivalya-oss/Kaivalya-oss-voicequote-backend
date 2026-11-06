@@ -41,7 +41,7 @@ COPY alembic.ini alembic_control.ini ./
 COPY alembic ./alembic
 COPY alembic_control ./alembic_control
 COPY app ./app
-COPY scripts/create_admin.py scripts/start.sh ./scripts/
+COPY scripts/create_admin.py ./scripts/create_admin.py
 
 USER appuser
 
@@ -50,7 +50,9 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-CMD ["sh", "scripts/start.sh"]
+# Only starts the server. Migrations are an explicit deployment step (docs/DEPLOYMENT_VERIFICATION.md),
+# and the server refuses to start on a database that does not match this release.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 
 # Tests and development seeding. Build with --target dev; never deployed.

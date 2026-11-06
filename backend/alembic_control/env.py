@@ -2,6 +2,7 @@
 import asyncio
 import os
 import sys
+from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import pool
@@ -14,6 +15,8 @@ from app.control_plane.models import ControlPlaneBase  # noqa: E402
 from app.core.config import settings  # noqa: E402
 
 config = context.config
+if config.config_file_name is not None:
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 target_metadata = ControlPlaneBase.metadata
 VERSION_TABLE = "control_plane_alembic_version"
 

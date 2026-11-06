@@ -9,6 +9,7 @@ from app.api.routes import api_v1_router
 from app.api.routes.health import router as health_router
 from app.core.config import settings
 from app.core.logging import logger, setup_logging
+from app.database.schema_check import ensure_app_schema_current
 from app.database.session import engine
 from app.middleware.error_handler import register_error_handlers
 from app.services.scheduler_service import shutdown_scheduler, start_scheduler
@@ -25,6 +26,9 @@ async def lifespan(app: FastAPI):
     # Ensure storage folders exist
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
     os.makedirs(settings.PDF_STORAGE_DIR, exist_ok=True)
+
+    # Migrations are an explicit deployment step. This only checks, so a mismatch stops here.
+    await ensure_app_schema_current()
 
     # Start background follow-up scheduler
     start_scheduler()
