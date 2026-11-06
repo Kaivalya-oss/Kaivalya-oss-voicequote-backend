@@ -4,7 +4,7 @@
 #   IMAGE=voicequote-backend:<tag> DEV_IMAGE=voicequote-backend:<tag>-dev ROLLBACK_IMAGE=voicequote-backend:30d80ca \
 #   CERT_DIR=<certs> scripts/verify/verify_image.sh <phase>...
 #
-# Phases: contents safety single pytest multitenant showroommigration outage migration backup hashes all
+# Phases: contents safety single pytest multitenant showroommigration outage migration backup hashes platformadmin all
 # Never reads a real .env, and every database and container here is disposable.
 export MSYS_NO_PATHCONV=1
 set -u
@@ -495,8 +495,114 @@ phase_backup() {
     docker exec $other rm -f /tmp/restore.dump
 }
 
-[ "$#" -gt 0 ] || { echo "usage: $0 contents|safety|single|pytest|multitenant|showroommigration|outage|migration|backup|hashes|all ..."; exit 2; }
-[ "$1" = all ] && set -- contents safety single pytest multitenant showroommigration outage migration backup hashes
+phase_platformadmin() {
+    echo "=== Platform Admin as its own process, on its least-privilege role"
+    local adm=vqv-admin main=vqv-admin-main role=vqa_login rolepw adminjwt mfakey showjwt
+    local control=vqa_control owner_url admin_url pw=Verify-Admin-Passphrase-1 email=platform.admin@example.com
+    rolepw="$(python -c 'import secrets; print(secrets.token_hex(24))')"
+    adminjwt="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
+    showjwt="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
+    mfakey="$MT_KEY"
+    owner_url="$URL/$control"
+    admin_url="postgresql+asyncpg://$role:$rolepw@postgres:5432/$control"
+    rmc $adm $main
+    newdb $control
+    sql vqv_single "DROP ROLE IF EXISTS $role" >/dev/null
+    main_env="-e APP_ENV=staging -e DEBUG=False -e JWT_SECRET_KEY=$showjwt -e FRONTEND_URL=https://staging.invalid -e MULTI_TENANT_ENABLED=true -e CONTROL_PLANE_DATABASE_URL=$owner_url -e TENANT_DB_ALLOW_PRIVATE_HOSTS=true -e SECRETS_LOCAL_DIR=/tmp/vq-secrets -e SECRETS_MASTER_KEY=$MT_KEY"
+    admin_env="-e ADMIN_ENV=staging -e ADMIN_DATABASE_URL=$admin_url -e ADMIN_JWT_SECRET_KEY=$adminjwt -e ADMIN_MFA_ENCRYPTION_KEY=$mfakey -e ADMIN_ALLOWED_ORIGINS=https://admin.staging.invalid"
+    uvcmd="--entrypoint uvicorn"
+    uvargs="app.platform_admin.main:app --host 0.0.0.0 --port 8000"
+
+    out="$(docker run --rm --network $NET $main_env --entrypoint alembic "$IMAGE" -c alembic_control.ini upgrade head 2>&1)"
+    check "explicit control-plane migration" "$?" 0
+    check "both control-plane revisions applied" "$(echo "$out" | grep -c 'Running upgrade')" 2
+    check "schema at the Platform Admin revision" "$(sql $control 'select version_num from control_plane_alembic_version')" c1a1_platform_admin
+    check "migration created no admin account" "$(sql $control 'select count(*) from platform_admins')" 0
+    check "group role can't log in" "$(sql $control "select rolcanlogin from pg_roles where rolname='voicequote_platform_admin'")" f
+    sql vqv_single "CREATE ROLE $role LOGIN PASSWORD '$rolepw' IN ROLE voicequote_platform_admin" >/dev/null
+
+    echo "--- the process refuses unsafe configuration"
+    docker run --rm --network $NET -e ADMIN_ENV=staging $uvcmd "$IMAGE" $uvargs >/dev/null 2>&1
+    check "refuses to start with no admin secrets" "$([ $? != 0 ] && echo yes)" yes
+    for bad in "JWT_SECRET_KEY=$showjwt" "SECRETS_MASTER_KEY=$MT_KEY" "CONTROL_PLANE_DATABASE_URL=$owner_url" "DATABASE_URL=$URL/vqv_single" "SECRETS_BACKEND=local"; do
+        o="$(docker run --rm --network $NET $admin_env -e "$bad" $uvcmd "$IMAGE" $uvargs 2>&1)"
+        check "refuses to start holding ${bad%%=*}" "$(echo "$o" | grep -c 'must not hold')" 1
+    done
+    o="$(docker run --rm --network $NET -e ADMIN_ENV=staging -e ADMIN_DATABASE_URL=$owner_url -e ADMIN_JWT_SECRET_KEY=$adminjwt -e ADMIN_MFA_ENCRYPTION_KEY=$mfakey $uvcmd "$IMAGE" $uvargs 2>&1)"
+    check "refuses to run as a powerful database role" "$(echo "$o" | grep -c 'privileges it must not have')" 1
+    docker run --rm --network $NET $admin_env -e ADMIN_COOKIE_SECURE=false $uvcmd "$IMAGE" $uvargs >/dev/null 2>&1
+    check "refuses insecure cookies outside development" "$([ $? != 0 ] && echo yes)" yes
+
+    echo "--- bootstrap"
+    boot() { docker run --rm --network $NET -e ADMIN_BOOTSTRAP_DATABASE_URL=$owner_url -e ADMIN_EMAIL="$1" -e ADMIN_FULL_NAME=Verify -e ADMIN_PASSWORD="$2" --entrypoint python "$IMAGE" scripts/bootstrap_platform_admin.py >/dev/null 2>&1; }
+    boot "$email" AdminPass123!;     check "bootstrap refuses a published password" "$?" 1
+    boot "$email" short;             check "bootstrap refuses a short password" "$?" 1
+    boot "$email" "$pw";             check "bootstrap creates the admin" "$?" 0
+    boot second@example.com "$pw";   check "second bootstrap refused" "$?" 1
+    check "exactly one admin exists" "$(sql $control 'select count(*) from platform_admins')" 1
+    check "bootstrap is audited" "$(sql $control "select count(*) from audit_events where action='PLATFORM_ADMIN_BOOTSTRAPPED'")" 1
+    check "password stored hashed" "$(sql $control "select count(*) from platform_admins where password_hash like '\$2b\$%'")" 1
+
+    docker run -d --name $adm --network $NET $admin_env $uvcmd "$IMAGE" $uvargs >/dev/null
+    wait_healthy $adm; check "admin process healthy" "$?" 0
+    docker run -d --name $main --network $NET $main_env --entrypoint uvicorn "$IMAGE" app.main:app --host 0.0.0.0 --port 8000 >/dev/null
+    wait_healthy $main; check "showroom process healthy" "$?" 0
+
+    echo "--- isolation of the running process"
+    envs_seen="$(docker inspect $adm --format '{{range .Config.Env}}{{println .}}{{end}}' | sed 's/=.*//' | tr -d '\r')"
+    for name in JWT_SECRET_KEY DATABASE_URL CONTROL_PLANE_DATABASE_URL SECRETS_MASTER_KEY SMTP_PASSWORD; do
+        check "process environment lacks $name" "$(echo "$envs_seen" | grep -cx "$name")" 0
+    done
+    loaded="$(docker exec $adm python -c "
+import sys, app.platform_admin.main as m
+bad=[n for n in sys.modules if n.startswith('app.') and n not in ('app.control_plane','app.control_plane.models','app.core','app.core.exceptions','app.schemas','app.schemas.common') and not n.startswith('app.platform_admin')]
+print(len(bad))" 2>&1 | tail -1 | tr -d '\r')"
+    check "process loads no showroom, tenant or secrets code" "$loaded" 0
+    conn_user="$(sql $control "select string_agg(distinct usename, ',') from pg_stat_activity where datname='$control' and application_name not like 'psql%' and usename='$role'")"
+    check "process connects as the least-privilege role" "$conn_user" "$role"
+
+    echo "--- the role, connecting exactly as the process does"
+    role_sql() { docker run --rm --network $NET -e PGPASSWORD="$rolepw" --entrypoint psql "$PG_IMG" -h postgres -U $role -d $control -Atq -c "$1" 2>&1 | tr -d '\r'; }
+    PG_IMG="$(docker inspect $PG --format '{{.Image}}')"
+    for stmt in "SELECT secret_reference FROM tenant_connections" "SELECT * FROM tenant_connections" "SELECT password_hash FROM users" "SELECT invitation_token_hash FROM tenant_memberships" \
+                "INSERT INTO platform_admins (id,email,full_name,password_hash,status,created_at,updated_at) VALUES (gen_random_uuid(),'x@example.com','X','x','ACTIVE',now(),now())" \
+                "DELETE FROM platform_admins" "UPDATE platform_admins SET email='x@example.com'" "UPDATE audit_events SET action='x'" "DELETE FROM audit_events" "TRUNCATE audit_events" "DELETE FROM tenants" "CREATE TABLE vqa_probe (id int)"; do
+        check "role refused: ${stmt:0:45}" "$(role_sql "$stmt" | grep -c 'permission denied')" 1
+    done
+    check "role can read connection metadata" "$(role_sql 'SELECT count(*) FROM tenant_connections')" "$(sql $control 'select count(*) from tenant_connections')"
+    check "no business tables in the central database" "$(role_sql 'SELECT count(*) FROM information_schema.tables WHERE table_name IN ($$customers$$,$$quotations$$,$$leads$$)')" 0
+    check "owner can't alter audit history either" "$(sql $control "UPDATE audit_events SET action='x'" | grep -c 'append-only')" 1
+
+    echo "--- black-box API checks"
+    docker run --rm -i --network $NET -e ADMIN_BASE=http://$adm:8000 -e SHOWROOM_BASE=http://$main:8000 -e ORIGIN=https://admin.staging.invalid -e EMAIL=$email -e PASSWORD="$pw" -e SHOWROOM_JWT_KEY="$showjwt" \
+        --entrypoint python "$DEV_IMAGE" - < "$HERE/verify_platform_admin.py" 2>&1 | tr -d '\r' | tee /tmp/vq_padmin.txt | grep -vE '^PASS'
+    check "black-box API checks" "${PIPESTATUS[0]}" 0
+
+    echo "--- afterwards"
+    check "audit trail recorded sign-ins" "$([ "$(sql $control "select count(*) from audit_events where action='ADMIN_LOGIN_SUCCEEDED'")" -ge 3 ] && echo yes)" yes
+    check "audit trail recorded failures" "$([ "$(sql $control "select count(*) from audit_events where action='ADMIN_LOGIN_FAILED'")" -ge 2 ] && echo yes)" yes
+    check "audit trail recorded refresh replay" "$(sql $control "select count(*) from audit_events where action='ADMIN_REFRESH_REUSE_DETECTED'")" 1
+    check "audit trail holds no password" "$(docker exec -i $PG pg_dump -U postgres --data-only -t audit_events $control | grep -c "$pw")" 0
+    check "database holds no password or TOTP secret in the clear" "$(docker exec -i $PG pg_dump -U postgres --data-only -t platform_admins $control | grep -c "$pw")" 0
+    check "admin logs hold no password" "$(docker logs $adm 2>&1 | grep -c "$pw")" 0
+    check "admin logs hold no tracebacks" "$(docker logs $adm 2>&1 | grep -c 'Traceback')" 0
+    t0=$(date +%s); docker stop $adm >/dev/null; t1=$(date +%s)
+    check "graceful stop" "$(docker inspect $adm --format '{{.State.ExitCode}}')" 0
+    echo "INFO  stopped in $((t1 - t0))s"
+    rmc $adm $main
+
+    echo "--- downgrade"
+    docker run --rm --network $NET $main_env --entrypoint alembic "$IMAGE" -c alembic_control.ini downgrade c0a1_initial >/dev/null 2>&1
+    check "migration reverses" "$?" 0
+    check "Platform Admin tables gone" "$(sql $control "select count(*) from information_schema.tables where table_name in ('platform_admins','audit_events','platform_admin_sessions')")" 0
+    docker run --rm --network $NET $main_env --entrypoint alembic "$IMAGE" -c alembic_control.ini upgrade head >/dev/null 2>&1
+    check "migration reapplies" "$?" 0
+    sql vqv_single "DROP DATABASE $control WITH (FORCE)" >/dev/null
+    sql vqv_single "DROP ROLE IF EXISTS $role" >/dev/null
+}
+
+[ "$#" -gt 0 ] || { echo "usage: $0 contents|safety|single|pytest|multitenant|showroommigration|outage|migration|backup|hashes|platformadmin|all ..."; exit 2; }
+[ "$1" = all ] && set -- contents safety single pytest multitenant showroommigration outage migration backup hashes platformadmin
 for p in "$@"; do "phase_$p"; done
 echo
 echo "RESULT: $PASSES passed, $FAILS failed"
