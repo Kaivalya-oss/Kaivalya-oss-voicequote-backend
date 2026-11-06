@@ -8,9 +8,15 @@ Phases, with the caller stopping and starting a showroom database between them:
   STATE='<state json>' WHICH=a|b HEALTHY=true|false CODE=<code> python verify_multitenant.py health
   STATE='<state json>' WHICH=a|b python verify_multitenant.py observe    (prints what staff get, checks nothing)
   STATE='<state json>' WHICH=a|b python verify_multitenant.py migrate
+  STATE='<state json>' python verify_multitenant.py access    (Head of Sales, takeover, suspension, deactivation)
 """
+import base64
+import hashlib
+import hmac
 import json
 import os
+import re
+import struct
 import sys
 import time
 import uuid
@@ -38,11 +44,35 @@ def H(t):
     return {"Authorization": f"Bearer {t}"}
 
 
-def register(tag):
-    r = c.post(f"{P}/showrooms/register", json={
-        "showroom_name": f"Verify {tag} {uuid.uuid4().hex[:6]}", "email": f"owner-{tag}-{uuid.uuid4().hex[:6]}@example.com",
-        "password": "VerifyOwner123!", "full_name": f"Owner {tag}"})
-    return r
+def totp(secret, step):
+    digest = hmac.new(base64.b32decode(secret), struct.pack(">Q", step), hashlib.sha1).digest()
+    offset = digest[-1] & 15
+    return str((struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF) % 1000000).zfill(6)
+
+
+def admin_sign_in():
+    """First sign-in for the Platform Admin, through password and MFA enrolment."""
+    A_ = f"{os.environ['ADMIN_BASE']}/api/v1/admin"
+    login = c.post(f"{A_}/auth/login", json={"email": os.environ["ADMIN_EMAIL"], "password": os.environ["ADMIN_PASSWORD"]}).json()["data"]
+    start = c.post(f"{A_}/auth/mfa/enroll/start", json={"mfa_token": login["mfa_token"]}).json()["data"]
+    done = c.post(f"{A_}/auth/mfa/enroll/confirm", json={"mfa_token": login["mfa_token"], "code": totp(start["secret"], int(time.time() // 30))})
+    c.cookies.clear()
+    return done.json()["data"]["access_token"]
+
+
+def onboard(tag, admin_token):
+    """The real path: the Platform Admin creates the showroom, and the Owner accepts the emailed invitation."""
+    email = f"owner-{tag}-{uuid.uuid4().hex[:6]}@example.com"
+    r = c.post(f"{os.environ['ADMIN_BASE']}/api/v1/admin/showrooms", headers=H(admin_token), json={
+        "showroom_name": f"Verify {tag} {uuid.uuid4().hex[:6]}", "legal_business_name": f"Verify {tag} Pvt Ltd", "owner_email": email, "owner_full_name": f"Owner {tag}"})
+    check(f"Platform Admin creates showroom {tag}", r.status_code == 201 and r.json()["data"]["invitation_delivery"] == "SENT", r.text)
+    mail = c.get(f"{os.environ['SINK_BASE']}/message", params={"to": email})
+    token = re.search(r"#token=([\w=\-]+)", mail.text.replace("=\n", ""))[1]
+    check(f"invitation token isn't in the admin response {tag}", token not in r.text)
+    accepted = c.post(f"{P}/invitations/accept", json={"token": token, "full_name": f"Owner {tag}", "password": "VerifyOwner123!"})
+    check(f"Owner accepts invitation {tag}", accepted.status_code == 200, accepted.text)
+    check(f"invitation can't be reused {tag}", c.post(f"{P}/invitations/accept", json={"token": token, "full_name": "Again", "password": "VerifyOwner123!"}).status_code == 400)
+    return accepted, r.json()["data"]["id"], email
 
 
 def conn_body(host, database, **kw):
@@ -62,8 +92,12 @@ if phase == "setup":
     check("control-plane connectivity", c.get(f"{BASE}/health/db").json().get("database") == "connected")
     check("single-showroom login not served", c.post(f"{A}/auth/login", json={"email": "a@example.com", "password": "x"}).status_code == 404)
 
-    ra, rb = register("a"), register("b")
-    check("tenant registration", ra.status_code == 201 and rb.status_code == 201, ra.text)
+    public = {"showroom_name": "Claimed", "email": "claimer@example.com", "password": "Claimer-Password-1", "full_name": "Claimer"}
+    check("public showroom registration is gone", c.post(f"{P}/showrooms/register", json=public).status_code == 404)
+    check("creating a showroom from the showroom API is gone", c.post(f"{P}/showrooms", json=public).status_code == 404)
+    admin_token = admin_sign_in()
+    ra, showroom_a, email_a = onboard("a", admin_token)
+    rb, showroom_b, _ = onboard("b", admin_token)
     a, b = ra.json()["data"], rb.json()["data"]
     check("separate tenant IDs", a["active_tenant"]["tenant_id"] != b["active_tenant"]["tenant_id"])
     ta, tb = a["access_token"], b["access_token"]
@@ -109,7 +143,15 @@ if phase == "setup":
     results_many = [c.get(f"{A}/customers", headers=H(ta)).status_code for _ in range(25)]
     check("repeated requests through the tenant pool", set(results_many) == {200})
 
-    print(json.dumps({"ta": ta, "tb": tb}))
+    # Team, for the access checks that follow.
+    def join(role):
+        email = f"{role.lower()}-{uuid.uuid4().hex[:6]}@example.com"
+        invite = c.post(f"{P}/tenants/current/invitations", headers=H(ta), json={"email": email, "role": role}).json()["data"]
+        res = c.post(f"{P}/invitations/accept", json={"token": invite["invitation_token"], "full_name": f"Verify {role}", "password": "VerifyStaff123!"}).json()["data"]
+        return {"email": email, "token": res["access_token"], "refresh": res["refresh_token"], "membership": res["active_tenant"]["membership_id"]}
+
+    head, sales = join("HEAD_OF_SALES"), join("SALESPERSON")
+    print(json.dumps({"ta": ta, "tb": tb, "admin": admin_token, "showroom_a": showroom_a, "head": head, "sales": sales, "quote": q.json()["data"]["id"], "email_a": email_a}))
     finish()
     sys.exit(0)
 
@@ -130,6 +172,58 @@ if phase == "down":
     check("repeat request during the outage is also a 503", again.status_code == 503, f"{again.status_code} {again.text}")
     finish()
 
+if phase == "access":
+    admin_api = f"{os.environ['ADMIN_BASE']}/api/v1/admin"
+    head, sales, admin = state["head"], state["sales"], state["admin"]
+    FIN = re.compile("revenue|profit|margin|pipeline|average_", re.IGNORECASE)
+
+    # Head of Sales
+    check("Head of Sales: revenue dashboard refused", c.get(f"{A}/dashboard/revenue", headers=H(head["token"])).status_code == 403)
+    check("Head of Sales: sales report refused", c.get(f"{A}/reports/sales", headers=H(head["token"])).status_code == 403)
+    r = c.get(f"{A}/dashboard/summary?include_financials=true", headers={**H(head["token"]), "X-Role": "OWNER"})
+    check("Head of Sales: summary has team figures but no revenue, even when asked", r.status_code == 200 and "total_customers" in r.text and not FIN.search(r.text), r.text)
+    r = c.get(f"{A}/dashboard/sales", headers=H(head["token"]))
+    check("Head of Sales: team analytics work, with no money", r.status_code == 200 and not FIN.search(r.text), r.text[:200])
+    r = c.get(f"{A}/reports/daily-export?format=csv", headers=H(head["token"]))
+    check("Head of Sales: export has no value total", r.status_code == 200 and "quotation value" not in r.text)
+    check("Owner: export has the value total", "quotation value" in c.get(f"{A}/reports/daily-export?format=csv", headers=H(ta)).text)
+    check("Owner: revenue dashboard works", c.get(f"{A}/dashboard/revenue", headers=H(ta)).status_code == 200)
+    r = c.get(f"{A}/quotations/{state['quote']}", headers=H(head["token"]))
+    check("Head of Sales: individual quotation is readable", r.status_code == 200, r.text[:160])
+    check("Salesperson: financials refused", c.get(f"{A}/dashboard/revenue", headers=H(sales["token"])).status_code == 403)
+    check("Salesperson: another person's quotation is hidden", c.get(f"{A}/quotations/{state['quote']}", headers=H(sales["token"])).status_code == 404)
+
+    # Admin can't take over a completed showroom
+    r = c.post(f"{admin_api}/showrooms/{state['showroom_a']}/owner-invitation", headers=H(admin), json={"owner_email": "attacker@example.com", "owner_full_name": "Attacker"})
+    check("Platform Admin can't invite an Owner into a completed showroom", r.status_code == 409 and r.json()["error"]["code"] == "OWNER_RECOVERY_REQUIRED", r.text)
+    check("showroom token refused on admin showroom routes", c.get(f"{admin_api}/showrooms/{state['showroom_a']}", headers=H(ta)).status_code == 401)
+    r = c.get(f"{admin_api}/showrooms/{state['showroom_a']}", headers=H(admin))
+    check("admin view holds no credentials or business data", r.status_code == 200 and not re.search("secret|password|Only In A|saas-tenant", r.text), r.text[:200])
+
+    # Suspension
+    r = c.post(f"{admin_api}/showrooms/{state['showroom_a']}/suspend", headers=H(admin), json={"reason": "Verification test"})
+    check("Platform Admin suspends the showroom", r.status_code == 200, r.text)
+    for label, token in (("Owner", ta), ("Head of Sales", head["token"]), ("Salesperson", sales["token"])):
+        r = c.get(f"{A}/customers", headers=H(token))
+        check(f"suspended: {label}'s existing session is blocked", r.status_code == 403 and r.json()["error"]["code"] == "TENANT_SUSPENDED", r.text[:120])
+    r = c.post(f"{P}/tenants/current/invitations", headers=H(ta), json={"email": "x@example.com", "role": "SALESPERSON"})
+    check("suspended: Owner can't invite", r.status_code == 403)
+    check("suspended: Owner can't change the database", c.post(f"{DB}/test", headers=H(ta), json=conn_body("saas-tenant-a", "showroom_a")).status_code == 403)
+    r = c.get(f"{P}/tenants/current/setup-status", headers=H(ta))
+    check("suspended: Owner can see the status, not the reason", r.status_code == 200 and r.json()["data"]["next_step"] == "CONTACT_SUPPORT" and "Verification test" not in r.text)
+    check("suspended: another showroom keeps working", c.get(f"{A}/customers", headers=H(tb)).status_code == 200)
+    r = c.post(f"{admin_api}/showrooms/{state['showroom_a']}/reactivate", headers=H(admin), json={"reason": "Verification finished"})
+    check("reactivation restores the showroom", r.status_code == 200 and r.json()["data"]["status"] == "ACTIVE", r.text)
+    check("reactivated: data is intact", "Only In A" in c.get(f"{A}/customers", headers=H(ta)).text)
+
+    # Deactivation
+    r = c.post(f"{P}/tenants/current/members/{sales['membership']}/deactivate", headers=H(ta))
+    check("Owner deactivates the salesperson", r.status_code == 200, r.text)
+    check("deactivated: existing session refused", c.get(f"{A}/customers", headers=H(sales["token"])).status_code == 401)
+    check("deactivated: refresh refused", c.post(f"{P}/auth/refresh", json={"refresh_token": sales["refresh"]}).status_code == 401)
+    check("deactivated: sign-in refused", c.post(f"{P}/auth/login", json={"email": sales["email"], "password": "VerifyStaff123!"}).status_code == 401)
+    finish()
+
 if phase == "probe":
     token = ta if os.environ["WHICH"] == "a" else tb
     expect, limit = int(os.environ["EXPECT"]), float(os.environ["LIMIT"])
@@ -140,7 +234,8 @@ if phase == "probe":
         print(f"INFO  showroom {os.environ['WHICH']} request {attempt + 1}: {r.status_code} in {took:.2f}s", file=log)
         check(f"status {expect} within {limit}s", r.status_code == expect and took < limit, f"{r.status_code} {took:.2f}s {r.text[:100]}")
         if expect == 503:
-            check("error is TENANT_DB_UNAVAILABLE", r.json()["error"]["code"] == "TENANT_DB_UNAVAILABLE", r.text[:100])
+            want = os.environ.get("CODE", "TENANT_DB_UNAVAILABLE")
+            check(f"error is {want}", r.json()["error"]["code"] == want, r.text[:100])
     finish()
 
 if phase == "health":

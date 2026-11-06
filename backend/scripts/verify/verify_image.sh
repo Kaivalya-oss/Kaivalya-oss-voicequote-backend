@@ -196,8 +196,28 @@ mt_env() {
 MT_KEY="$(python -c 'import base64,os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())')"
 vm() { # phase, extra env...
     local p=$1; shift
-    docker run --rm -i --network $NET -v "$CERT_DIR":/certs:ro -e BASE=http://vqv-mt:8000 -e CA_FILE=/certs/ca.crt -e APP_PASSWORD=app-user-test-password-9x7 -e "STATE=${MT_STATE:-{\}}" "$@" --entrypoint python "$DEV_IMAGE" - "$p" < "$HERE/verify_multitenant.py" 2>&1 | tr -d '\r'
+    docker run --rm -i --network $NET -v "$CERT_DIR":/certs:ro -e BASE=http://vqv-mt:8000 -e CA_FILE=/certs/ca.crt -e APP_PASSWORD=app-user-test-password-9x7 -e "STATE=${MT_STATE:-{\}}" -e ADMIN_BASE=http://vqv-padmin:8000 -e SINK_BASE=http://vqv-smtp:8025 -e ADMIN_EMAIL=platform.admin@example.com -e ADMIN_PASSWORD="$ADMIN_LOGIN_PW" "$@" --entrypoint python "$DEV_IMAGE" - "$p" < "$HERE/verify_multitenant.py" 2>&1 | tr -d '\r'
     return "${PIPESTATUS[0]}"
+}
+
+start_sink() {
+    rmc vqv-smtp
+    docker run -d --name vqv-smtp --pull=never --network $NET -i --entrypoint python "$DEV_IMAGE" -c "$(cat "$HERE/smtp_sink.py")" >/dev/null
+    sleep 1
+}
+
+ADMIN_ROLE_PW="$(python -c 'import secrets; print(secrets.token_hex(24))')"
+ADMIN_SIGNING="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
+ADMIN_LOGIN_PW="Verify-Admin-Passphrase-1"
+start_admin_for() {  # $1 = control database, already migrated
+    rmc vqv-padmin
+    sql vqv_single "DROP ROLE IF EXISTS vqa_mt" >/dev/null
+    sql vqv_single "CREATE ROLE vqa_mt LOGIN PASSWORD '$ADMIN_ROLE_PW' IN ROLE voicequote_platform_admin" >/dev/null
+    docker run --rm --network $NET -e ADMIN_BOOTSTRAP_DATABASE_URL=$URL/$1 -e ADMIN_EMAIL=platform.admin@example.com -e ADMIN_FULL_NAME=Verify -e ADMIN_PASSWORD="$ADMIN_LOGIN_PW" --entrypoint python "$IMAGE" scripts/bootstrap_platform_admin.py >/dev/null 2>&1
+    docker run -d --name vqv-padmin --network $NET -e ADMIN_ENV=staging -e ADMIN_DATABASE_URL="postgresql+asyncpg://vqa_mt:$ADMIN_ROLE_PW@postgres:5432/$1" -e ADMIN_JWT_SECRET_KEY=$ADMIN_SIGNING -e ADMIN_MFA_ENCRYPTION_KEY=$MT_KEY \
+        -e ADMIN_ALLOWED_ORIGINS=https://admin.staging.invalid -e ADMIN_SMTP_HOST=vqv-smtp -e ADMIN_SMTP_PORT=2525 -e ADMIN_SMTP_STARTTLS=false -e ADMIN_SMTP_FROM=invitations@staging.invalid -e ADMIN_OWNER_INVITE_URL=https://app.staging.invalid/showroom/invite \
+        --entrypoint uvicorn "$IMAGE" app.platform_admin.main:app --host 0.0.0.0 --port 8000 >/dev/null
+    wait_healthy vqv-padmin; check "admin process healthy" "$?" 0
 }
 
 mt_prepare_servers() {
@@ -219,9 +239,10 @@ phase_multitenant() {
     check "startup created no control tables" "$(sql vqv_control "select count(*) from information_schema.tables where table_schema='public'")" 0
     out="$(docker run --rm --network $NET $(mt_env) --entrypoint alembic "$IMAGE" -c alembic_control.ini upgrade head 2>&1)"
     check "explicit control-plane migration" "$?" 0
-    check "control-plane migration logs its progress" "$(echo "$out" | grep -c 'Running upgrade')" 2
+    check "control-plane migration logs its progress" "$(echo "$out" | grep -c 'Running upgrade')" 3
     check "  initial revision logged" "$(echo "$out" | grep -c 'Running upgrade  -> c0a1_initial')" 1
     check "  Platform Admin revision logged" "$(echo "$out" | grep -c 'Running upgrade c0a1_initial -> c1a1_platform_admin')" 1
+    check "  onboarding revision logged" "$(echo "$out" | grep -c 'Running upgrade c1a1_platform_admin -> c2a1_showroom_onboarding')" 1
     check "no business tables in the central database" "$(sql vqv_control "select count(*) from information_schema.tables where table_schema='public' and table_name in ('customers','quotations','quotation_items','leads','vehicle_variants','inventory_units')")" 0
     docker run -d --name vqv-mt --network $NET -v "$CERT_DIR":/certs:ro $(mt_env) "$IMAGE" >/dev/null
     wait_healthy vqv-mt; check "healthy" "$?" 0
@@ -233,11 +254,21 @@ import httpx
 print(httpx.post('http://vqv-mt:8000/api/v1/platform/auth/login',json={'email':'${a%%:*}','password':'${a#*:}'},timeout=20).status_code)" 2>&1 | tail -1 | tr -d '\r')" 401
     done
     mt_prepare_servers
+    start_sink
+    start_admin_for vqv_control
     vm setup >/tmp/vq_mt_setup.txt 2>&1; true
     MT_STATE="$(grep -E '^\{' /tmp/vq_mt_setup.txt | tail -1)"
     grep -E '^FAIL|checks passed' /tmp/vq_mt_setup.txt
     check "black-box setup" "$(grep -c '^FAIL' /tmp/vq_mt_setup.txt)" 0
     echo "$MT_STATE" > /tmp/vq_mt_state.json
+    vm access > /tmp/vq_mt_access.txt 2>&1; true
+    grep -E '^FAIL|checks passed' /tmp/vq_mt_access.txt
+    check "black-box access rules" "$(grep -c '^FAIL' /tmp/vq_mt_access.txt)" 0
+    check "suspension and reactivation audited" "$(sql vqv_control "select count(*) from audit_events where action in ('SHOWROOM_SUSPENDED','SHOWROOM_REACTIVATED') and reason is not null")" 2
+    check "onboarding audited" "$(sql vqv_control "select count(*) from audit_events where action='SHOWROOM_CREATED' and actor_type='PLATFORM_ADMIN'")" 2
+    check "deactivation audited" "$(sql vqv_control "select count(*) from audit_events where action='MEMBER_DEACTIVATED'")" 1
+    check "no invitation token or password in audit events" "$(docker exec -i $PG pg_dump -U postgres --data-only -t audit_events vqv_control | grep -cE 'VerifyOwner123|VerifyStaff123|token=')" 0
+    rmc vqv-padmin
     for s in a b; do
         check "showroom $s: one TLS app connection only" "$(docker exec -i vqv-saas-tenant-$s-1 psql -U saas_admin -d showroom_test -Atq -c "select count(*) from pg_stat_ssl s join pg_stat_activity a using (pid) where a.usename='vq_app' and not s.ssl" | tr -d '\r')" 0
     done
@@ -303,11 +334,11 @@ phase_showroommigration() {
     check "showroom B not affected" "$(showroom_version b)" $head
     docker restart vqv-mt >/dev/null; wait_healthy vqv-mt
     check "app restart does not migrate a showroom" "$(showroom_version a)" $old
-    out="$(vm observe -e WHICH=a)"; echo "$out" | grep -E '^INFO'
-    echo "KNOWN DEFECT  unhandled errors from the older schema: $(docker logs vqv-mt 2>&1 | grep -c 'Traceback')"
-    docker logs vqv-mt 2>&1 | grep -oE 'Undefined[A-Za-z]+Error|column [a-z_.]+ does not exist' | sort | uniq -c | sed 's/^/INFO  /'
+    since="$(date -u +%FT%TZ)"
+    out="$(vm probe -e WHICH=a -e EXPECT=503 -e LIMIT=8 -e CODE=TENANT_DB_SCHEMA_OUTDATED)"; rc=$?; echo "$out" | grep -E '^(INFO|FAIL)'; check "older showroom: staff get a clear 503, not a 500" "$rc" 0
+    check "older showroom: no unhandled errors logged" "$(docker logs --since "$since" vqv-mt 2>&1 | grep -cE 'Traceback|Unhandled|UndefinedColumn')" 0
     LABEL="older showroom: health reports it"
-    out="$(vm health -e WHICH=a -e HEALTHY=false -e CODE=TENANT_DB_VERIFICATION_FAILED)"; rc=$?; echo "$out" | grep -E '^(INFO|FAIL)'; check "$LABEL" "$rc" 0
+    out="$(vm health -e WHICH=a -e HEALTHY=false -e CODE=TENANT_DB_SCHEMA_OUTDATED)"; rc=$?; echo "$out" | grep -E '^(INFO|FAIL)'; check "$LABEL" "$rc" 0
     out="$(vm probe -e WHICH=b -e EXPECT=200 -e LIMIT=2)"; rc=$?; echo "$out" | grep -E '^FAIL'; check "other showroom keeps working" "$rc" 0
     out="$(vm migrate -e WHICH=a)"; rc=$?; echo "$out" | grep -E '^(INFO|FAIL)'; check "Owner migrates the existing showroom" "$rc" 0
     check "showroom A back at head" "$(showroom_version a)" $head
@@ -317,6 +348,21 @@ phase_showroommigration() {
     check "migration recorded in the central log" "$(sql vqv_control "select count(*) from tenant_migration_runs where from_version='$old' and to_version='$head' and status='SUCCEEDED'")" 1
     check "control-plane version unchanged by showroom migration" "$(sql vqv_control 'select version_num from control_plane_alembic_version')" "$ctl"
     check "showroom B version still unchanged" "$(showroom_version b)" $head
+
+    echo "--- the server-side command"
+    docker run --rm --network $NET -e APP_ENV=staging -e DATABASE_URL="$(showroom_url b)" --entrypoint alembic "$IMAGE" downgrade $old >/dev/null 2>&1
+    vm health -e WHICH=b -e HEALTHY=false -e CODE=TENANT_DB_SCHEMA_OUTDATED >/dev/null 2>&1
+    out="$(docker exec vqv-mt python scripts/migrate_showrooms.py --plan 2>&1 | tr -d '\r')"
+    check "plan names the showroom that needs migrating" "$(echo "$out" | grep -c 'REQUIRED')" 1
+    check "plan changes nothing" "$(showroom_version b)" $old
+    docker exec vqv-mt python scripts/migrate_showrooms.py --all >/dev/null 2>&1
+    check "without --execute nothing runs" "$(showroom_version b)" $old
+    out="$(docker exec vqv-mt python scripts/migrate_showrooms.py --all --execute 2>&1 | tr -d '\r')"; rc=$?
+    check "command migrates it" "$rc" 0
+    check "showroom B back at head" "$(showroom_version b)" $head
+    check "showroom B data kept" "$(docker exec -i vqv-saas-tenant-b-1 psql -U saas_admin -d showroom_b -Atq -c "select count(*) from customers where full_name='Only In B'" | tr -d '\r')" 1
+    out="$(vm probe -e WHICH=b -e EXPECT=200 -e LIMIT=2)"; rc=$?; check "showroom B serves requests after the command" "$rc" 0
+    check "command is audited" "$(sql vqv_control "select count(*) from audit_events where action='SHOWROOM_MIGRATION_SUCCEEDED' and actor_type='SYSTEM'")" 1
 }
 
 phase_hashes() {
@@ -500,6 +546,7 @@ phase_backup() {
 phase_platformadmin() {
     echo "=== Platform Admin as its own process, on its least-privilege role"
     local adm=vqv-admin main=vqv-admin-main role=vqa_login rolepw adminjwt mfakey showjwt
+    start_sink
     local control=vqa_control owner_url admin_url pw=Verify-Admin-Passphrase-1 email=platform.admin@example.com
     rolepw="$(python -c 'import secrets; print(secrets.token_hex(24))')"
     adminjwt="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
@@ -511,14 +558,14 @@ phase_platformadmin() {
     newdb $control
     sql vqv_single "DROP ROLE IF EXISTS $role" >/dev/null
     main_env="-e APP_ENV=staging -e DEBUG=False -e JWT_SECRET_KEY=$showjwt -e FRONTEND_URL=https://staging.invalid -e MULTI_TENANT_ENABLED=true -e CONTROL_PLANE_DATABASE_URL=$owner_url -e TENANT_DB_ALLOW_PRIVATE_HOSTS=true -e SECRETS_LOCAL_DIR=/tmp/vq-secrets -e SECRETS_MASTER_KEY=$MT_KEY"
-    admin_env="-e ADMIN_ENV=staging -e ADMIN_DATABASE_URL=$admin_url -e ADMIN_JWT_SECRET_KEY=$adminjwt -e ADMIN_MFA_ENCRYPTION_KEY=$mfakey -e ADMIN_ALLOWED_ORIGINS=https://admin.staging.invalid"
+    admin_env="-e ADMIN_ENV=staging -e ADMIN_DATABASE_URL=$admin_url -e ADMIN_JWT_SECRET_KEY=$adminjwt -e ADMIN_MFA_ENCRYPTION_KEY=$mfakey -e ADMIN_ALLOWED_ORIGINS=https://admin.staging.invalid -e ADMIN_SMTP_HOST=vqv-smtp -e ADMIN_SMTP_PORT=2525 -e ADMIN_SMTP_STARTTLS=false -e ADMIN_SMTP_FROM=invitations@staging.invalid -e ADMIN_OWNER_INVITE_URL=https://app.staging.invalid/showroom/invite"
     uvcmd="--entrypoint uvicorn"
     uvargs="app.platform_admin.main:app --host 0.0.0.0 --port 8000"
 
     out="$(docker run --rm --network $NET $main_env --entrypoint alembic "$IMAGE" -c alembic_control.ini upgrade head 2>&1)"
     check "explicit control-plane migration" "$?" 0
-    check "both control-plane revisions applied" "$(echo "$out" | grep -c 'Running upgrade')" 2
-    check "schema at the Platform Admin revision" "$(sql $control 'select version_num from control_plane_alembic_version')" c1a1_platform_admin
+    check "all control-plane revisions applied" "$(echo "$out" | grep -c 'Running upgrade')" 3
+    check "schema at the onboarding revision" "$(sql $control 'select version_num from control_plane_alembic_version')" c2a1_showroom_onboarding
     check "migration created no admin account" "$(sql $control 'select count(*) from platform_admins')" 0
     check "group role can't log in" "$(sql $control "select rolcanlogin from pg_roles where rolname='voicequote_platform_admin'")" f
     sql vqv_single "CREATE ROLE $role LOGIN PASSWORD '$rolepw' IN ROLE voicequote_platform_admin" >/dev/null
@@ -569,7 +616,8 @@ print(len(bad))" 2>&1 | tail -1 | tr -d '\r')"
     PG_IMG="$(docker inspect $PG --format '{{.Image}}')"
     for stmt in "SELECT secret_reference FROM tenant_connections" "SELECT * FROM tenant_connections" "SELECT password_hash FROM users" "SELECT invitation_token_hash FROM tenant_memberships" \
                 "INSERT INTO platform_admins (id,email,full_name,password_hash,status,created_at,updated_at) VALUES (gen_random_uuid(),'x@example.com','X','x','ACTIVE',now(),now())" \
-                "DELETE FROM platform_admins" "UPDATE platform_admins SET email='x@example.com'" "UPDATE audit_events SET action='x'" "DELETE FROM audit_events" "TRUNCATE audit_events" "DELETE FROM tenants" "CREATE TABLE vqa_probe (id int)"; do
+                "DELETE FROM platform_admins" "UPDATE platform_admins SET email='x@example.com'" "UPDATE audit_events SET action='x'" "DELETE FROM audit_events" "TRUNCATE audit_events" "DELETE FROM tenants" "CREATE TABLE vqa_probe (id int)" \
+                "UPDATE users SET password_hash='x'" "UPDATE tenant_memberships SET role='OWNER'" "UPDATE tenant_connections SET secret_reference='x'"; do
         check "role refused: ${stmt:0:45}" "$(role_sql "$stmt" | grep -c 'permission denied')" 1
     done
     check "role can read connection metadata" "$(role_sql 'SELECT count(*) FROM tenant_connections')" "$(sql $control 'select count(*) from tenant_connections')"
@@ -577,7 +625,7 @@ print(len(bad))" 2>&1 | tail -1 | tr -d '\r')"
     check "owner can't alter audit history either" "$(sql $control "UPDATE audit_events SET action='x'" | grep -c 'append-only')" 1
 
     echo "--- black-box API checks"
-    docker run --rm -i --network $NET -e ADMIN_BASE=http://$adm:8000 -e SHOWROOM_BASE=http://$main:8000 -e ORIGIN=https://admin.staging.invalid -e EMAIL=$email -e PASSWORD="$pw" -e SHOWROOM_JWT_KEY="$showjwt" \
+    docker run --rm -i --network $NET -e ADMIN_BASE=http://$adm:8000 -e SHOWROOM_BASE=http://$main:8000 -e ORIGIN=https://admin.staging.invalid -e EMAIL=$email -e PASSWORD="$pw" -e SHOWROOM_JWT_KEY="$showjwt" -e SINK_BASE=http://vqv-smtp:8025 \
         --entrypoint python "$DEV_IMAGE" - < "$HERE/verify_platform_admin.py" 2>&1 | tr -d '\r' | tee /tmp/vq_padmin.txt | grep -vE '^PASS'
     check "black-box API checks" "${PIPESTATUS[0]}" 0
 
@@ -592,7 +640,7 @@ print(len(bad))" 2>&1 | tail -1 | tr -d '\r')"
     t0=$(date +%s); docker stop $adm >/dev/null; t1=$(date +%s)
     check "graceful stop" "$(docker inspect $adm --format '{{.State.ExitCode}}')" 0
     echo "INFO  stopped in $((t1 - t0))s"
-    rmc $adm $main
+    rmc $adm $main vqv-smtp
 
     echo "--- downgrade"
     docker run --rm --network $NET $main_env --entrypoint alembic "$IMAGE" -c alembic_control.ini downgrade c0a1_initial >/dev/null 2>&1

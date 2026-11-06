@@ -91,9 +91,17 @@ check("admin route works with full sign-in", me.status_code == 200 and me.json()
 check("profile holds no secrets", not re.search("password|mfa_secret|hash", me.text))
 
 # Boundary with the showroom API, using a real showroom account on a real showroom process.
-owner = c.post(f"{SHOWROOM}/api/v1/platform/showrooms/register", json={"showroom_name": f"Boundary {int(time.time())}", "email": f"owner-{int(time.time())}@example.com", "password": "Boundary-Owner-Pass-1", "full_name": "Boundary Owner"})
-check("showroom account for boundary test", owner.status_code == 201, owner.text)
+owner_email = f"owner-{int(time.time())}@example.com"
+created = c.post(f"{A}/showrooms", headers=H(access), json={"showroom_name": f"Boundary {int(time.time())}", "legal_business_name": "Boundary Pvt Ltd", "owner_email": owner_email, "owner_full_name": "Boundary Owner"})
+check("admin creates a showroom", created.status_code == 201 and created.json()["data"]["invitation_delivery"] == "SENT", created.text)
+mail = c.get(f"{os.environ['SINK_BASE']}/message", params={"to": owner_email}).text.replace("=\n", "")
+invite_token = re.search(r"#token=([\w=\-]+)", mail)[1]
+check("invitation token isn't in the admin's response", invite_token not in created.text)
+owner = c.post(f"{SHOWROOM}/api/v1/platform/invitations/accept", json={"token": invite_token, "full_name": "Boundary Owner", "password": "Boundary-Owner-Pass-1"})
+check("Owner accepts the invitation", owner.status_code == 200, owner.text)
 sdata = owner.json()["data"]
+check("public showroom registration is gone", c.post(f"{SHOWROOM}/api/v1/platform/showrooms/register", json={"showroom_name": "Claimed", "email": "claimer@example.com", "password": "Claimer-Password-1", "full_name": "Claimer"}).status_code == 404)
+check("showroom token refused on admin showroom routes", c.get(f"{A}/showrooms/{created.json()['data']['id']}", headers=H(sdata["access_token"])).status_code == 401)
 check("showroom token names its audience", jwt.decode(sdata["access_token"], options={"verify_signature": False})["aud"] == "voicequote-showroom")
 for label, token in (("access", sdata["access_token"]), ("refresh", sdata["refresh_token"])):
     check(f"showroom {label} token refused by admin API", c.get(f"{A}/me", headers=H(token)).status_code == 401)
