@@ -219,7 +219,9 @@ phase_multitenant() {
     check "startup created no control tables" "$(sql vqv_control "select count(*) from information_schema.tables where table_schema='public'")" 0
     out="$(docker run --rm --network $NET $(mt_env) --entrypoint alembic "$IMAGE" -c alembic_control.ini upgrade head 2>&1)"
     check "explicit control-plane migration" "$?" 0
-    check "control-plane migration logs its progress" "$(echo "$out" | grep -c 'Running upgrade')" 1
+    check "control-plane migration logs its progress" "$(echo "$out" | grep -c 'Running upgrade')" 2
+    check "  initial revision logged" "$(echo "$out" | grep -c 'Running upgrade  -> c0a1_initial')" 1
+    check "  Platform Admin revision logged" "$(echo "$out" | grep -c 'Running upgrade c0a1_initial -> c1a1_platform_admin')" 1
     check "no business tables in the central database" "$(sql vqv_control "select count(*) from information_schema.tables where table_schema='public' and table_name in ('customers','quotations','quotation_items','leads','vehicle_variants','inventory_units')")" 0
     docker run -d --name vqv-mt --network $NET -v "$CERT_DIR":/certs:ro $(mt_env) "$IMAGE" >/dev/null
     wait_healthy vqv-mt; check "healthy" "$?" 0
@@ -524,7 +526,7 @@ phase_platformadmin() {
     echo "--- the process refuses unsafe configuration"
     docker run --rm --network $NET -e ADMIN_ENV=staging $uvcmd "$IMAGE" $uvargs >/dev/null 2>&1
     check "refuses to start with no admin secrets" "$([ $? != 0 ] && echo yes)" yes
-    for bad in "JWT_SECRET_KEY=$showjwt" "SECRETS_MASTER_KEY=$MT_KEY" "CONTROL_PLANE_DATABASE_URL=$owner_url" "DATABASE_URL=$URL/vqv_single" "SECRETS_BACKEND=local"; do
+    for bad in "JWT_SECRET_KEY=$showjwt" "SECRETS_MASTER_KEY=$MT_KEY" "CONTROL_PLANE_DATABASE_URL=$owner_url" "DATABASE_URL=$URL/vqv_single" "SECRETS_BACKEND=vqsentinel-backend-value"; do
         o="$(docker run --rm --network $NET $admin_env -e "$bad" $uvcmd "$IMAGE" $uvargs 2>&1)"; rc=$?
         check "refuses to start holding ${bad%%=*}" "$([ $rc != 0 ] && echo "$o" | grep -q 'must not hold' && echo yes)" yes
         check "  refusal doesn't print the value" "$(echo "$o" | grep -cF "${bad#*=}")" 0
