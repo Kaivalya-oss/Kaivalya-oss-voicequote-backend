@@ -389,10 +389,10 @@ async def test_role_change_reaches_the_showroom_staff_row(client: AsyncClient):
     owner, database = await showroom(client, SERVER_A)
     sales = await invite_and_join(client, owner["access_token"], "SALESPERSON")
     await client.get("/api/v1/customers", headers=H(sales["access_token"]))
-    assert (await client.get("/api/v1/reports/sales", headers=H(sales["access_token"]))).status_code == 403
+    assert (await client.get("/api/v1/reports/leads", headers=H(sales["access_token"]))).status_code == 403
     await client.put(f"/api/v1/platform/tenants/current/members/{sales['active_tenant']['membership_id']}/role",
                      headers=H(owner["access_token"]), json={"role": "HEAD_OF_SALES"})
-    assert (await client.get("/api/v1/reports/sales", headers=H(sales["access_token"]))).status_code == 200
+    assert (await client.get("/api/v1/reports/leads", headers=H(sales["access_token"]))).status_code == 200
 
 
 # ---------- business workflow on the tenant database ----------

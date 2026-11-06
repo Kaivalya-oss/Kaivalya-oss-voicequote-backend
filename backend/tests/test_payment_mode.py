@@ -248,7 +248,7 @@ async def test_comparison_excluded_from_money_totals(client: AsyncClient, admin_
 
 
 @pytest.mark.asyncio
-async def test_daily_export_shows_options_and_payment_mode(client: AsyncClient, sales_token: str):
+async def test_daily_export_shows_options_and_payment_mode(client: AsyncClient, sales_token: str, admin_token: str):
     cmp_q = await quote(client, sales_token, mode="FINANCE", compare=True)
     single = await quote(client, sales_token, mode="CASH")
     a_price, b_price = [float(o["total_price"]) for o in vehicle_options(cmp_q)]
@@ -269,6 +269,14 @@ async def test_daily_export_shows_options_and_payment_mode(client: AsyncClient, 
 
     summary = {r[0]: r[1] for r in wb["Summary"].iter_rows(values_only=True) if r[0]}
     assert summary["Comparison quotations (not totalled)"] >= 1
+    # A salesperson's export has no money total. Management's does, across everyone's quotations.
+    assert "Single-vehicle quotation value (₹)" not in summary
+    res = await client.get("/api/v1/reports/daily-export?format=xlsx", headers=H(admin_token))
+    wb = load_workbook(io.BytesIO(res.content))
+    sheet = wb["Quotations"]
+    header = [c.value for c in sheet[1]]
+    rows = [dict(zip(header, r)) for r in sheet.iter_rows(min_row=2, values_only=True)]
+    summary = {r[0]: r[1] for r in wb["Summary"].iter_rows(values_only=True) if r[0]}
     single_prices = [float(r["On-road price A (₹)"]) for r in rows if r["On-road price B (₹)"] is None]
     assert float(summary["Single-vehicle quotation value (₹)"]) == pytest.approx(sum(single_prices))
 

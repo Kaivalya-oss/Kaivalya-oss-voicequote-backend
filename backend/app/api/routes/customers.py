@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_client_ip, get_current_user, require_roles
-from app.core.permissions import SALES_ROLES, MANAGEMENT_ROLES
+from app.core.permissions import CUSTOMER_DELETE_ROLES, SALES_ROLES, MANAGEMENT_ROLES
 from app.database.dependencies import get_db
 from app.models.user import User
 from app.schemas.common import MessageResponse, PaginatedResponse, SuccessResponse
@@ -114,7 +114,7 @@ async def update_customer(
 async def delete_customer(
     id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_roles(*MANAGEMENT_ROLES)),
+    current_user: User = Depends(require_roles(*CUSTOMER_DELETE_ROLES)),
     ip_address: str = Depends(get_client_ip),
 ):
     service = CustomerService(db)

@@ -198,7 +198,7 @@ class DailyExportService:
     # ---------- Writers ----------
 
     @staticmethod
-    def summary_rows(day: date, sections: List[Section], scope: str) -> List[List[Any]]:
+    def summary_rows(day: date, sections: List[Section], scope: str, financial_totals: bool = False) -> List[List[Any]]:
         quotes = next(s for s in sections if s.title == "Quotations")
         # Option B column set = a comparison of alternatives, which has no single amount to total.
         comparisons = sum(1 for r in quotes.rows if r[7])
@@ -209,17 +209,17 @@ class DailyExportService:
             ["Scope", scope],
             [],
             *[[s.title, len(s.rows)] for s in sections],
-            ["Single-vehicle quotation value (₹)", value],
+            *([["Single-vehicle quotation value (₹)", value]] if financial_totals else []),
             ["Comparison quotations (not totalled)", comparisons],
         ]
 
     @staticmethod
-    def to_csv(day: date, sections: List[Section], scope: str) -> bytes:
+    def to_csv(day: date, sections: List[Section], scope: str, financial_totals: bool = False) -> bytes:
         """One CSV with each section stacked under its own heading."""
         buf = io.StringIO()
         writer = csv.writer(buf)
         writer.writerow([f"Daily update — {day.strftime('%d-%m-%Y')}"])
-        for row in DailyExportService.summary_rows(day, sections, scope):
+        for row in DailyExportService.summary_rows(day, sections, scope, financial_totals):
             writer.writerow(row)
         for s in sections:
             writer.writerow([])
@@ -232,7 +232,7 @@ class DailyExportService:
         return ("﻿" + buf.getvalue()).encode("utf-8")
 
     @staticmethod
-    def to_xlsx(day: date, sections: List[Section], scope: str) -> bytes:
+    def to_xlsx(day: date, sections: List[Section], scope: str, financial_totals: bool = False) -> bytes:
         wb = Workbook()
         bold = Font(bold=True)
         head_fill = PatternFill("solid", fgColor="DCE6F1")
@@ -241,7 +241,7 @@ class DailyExportService:
         summary.title = "Summary"
         summary.append([f"Daily update — {day.strftime('%d-%m-%Y')}"])
         summary["A1"].font = Font(bold=True, size=14)
-        for row in DailyExportService.summary_rows(day, sections, scope):
+        for row in DailyExportService.summary_rows(day, sections, scope, financial_totals):
             summary.append(row)
         for row in summary.iter_rows(min_row=2):
             row[0].font = bold

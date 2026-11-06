@@ -31,7 +31,7 @@ class DashboardService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def get_summary(self) -> DashboardSummary:
+    async def get_summary(self, include_financials: bool = False) -> DashboardSummary:
         # Customers count
         cust_cnt = (await self.session.execute(select(func.count(Customer.id)))).scalar_one()
 
@@ -46,16 +46,18 @@ class DashboardService:
         bookings = (await self.session.execute(select(func.count(Lead.id)).where(Lead.status == "BOOKED"))).scalar_one()
         purchases = (await self.session.execute(select(func.count(Lead.id)).where(Lead.status == "PURCHASED"))).scalar_one()
 
-        # Revenue from accepted quotations
-        rev_stmt = select(func.coalesce(func.sum(Quotation.final_price), Decimal("0.00"))).where(
-            Quotation.status == "ACCEPTED", ~IS_COMPARISON
-        )
-        revenue = (await self.session.execute(rev_stmt)).scalar_one()
-        accepted_comparisons = (
-            await self.session.execute(
-                select(func.count(Quotation.id)).where(Quotation.status == "ACCEPTED", IS_COMPARISON)
+        # Revenue from accepted quotations. Not even computed for roles that may not see it.
+        revenue = accepted_comparisons = None
+        if include_financials:
+            rev_stmt = select(func.coalesce(func.sum(Quotation.final_price), Decimal("0.00"))).where(
+                Quotation.status == "ACCEPTED", ~IS_COMPARISON
             )
-        ).scalar_one()
+            revenue = (await self.session.execute(rev_stmt)).scalar_one()
+            accepted_comparisons = (
+                await self.session.execute(
+                    select(func.count(Quotation.id)).where(Quotation.status == "ACCEPTED", IS_COMPARISON)
+                )
+            ).scalar_one()
 
         # Followups pending
         pending_fups = (await self.session.execute(select(func.count(Followup.id)).where(Followup.status == "SCHEDULED"))).scalar_one()

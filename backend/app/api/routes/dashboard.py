@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_current_user, require_roles
-from app.core.permissions import MANAGEMENT_ROLES
+from app.core.permissions import FINANCIAL_SUMMARY_ROLES, MANAGEMENT_ROLES
 from app.database.dependencies import get_db
 from app.models.user import User
 from app.schemas.common import SuccessResponse
@@ -21,6 +21,7 @@ router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
 @router.get(
     "/summary",
     response_model=SuccessResponse[DashboardSummary],
+    response_model_exclude_none=True,
     summary="Get overall dealership KPI performance metrics",
 )
 async def get_summary(
@@ -28,7 +29,7 @@ async def get_summary(
     current_user: User = Depends(require_roles(*MANAGEMENT_ROLES)),
 ):
     service = DashboardService(db)
-    summary = await service.get_summary()
+    summary = await service.get_summary(include_financials=current_user.role.name in FINANCIAL_SUMMARY_ROLES)
     return SuccessResponse(data=summary)
 
 
@@ -81,7 +82,7 @@ async def get_inventory_metrics(
 )
 async def get_revenue_metrics(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_roles(*MANAGEMENT_ROLES)),
+    current_user: User = Depends(require_roles(*FINANCIAL_SUMMARY_ROLES)),
 ):
     service = DashboardService(db)
     metrics = await service.get_revenue_metrics()

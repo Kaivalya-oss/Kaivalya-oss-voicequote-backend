@@ -10,8 +10,9 @@ class DashboardSummary(BaseModel):
     quotations_accepted: int
     active_bookings: int
     completed_purchases: int
-    total_revenue: Decimal
-    accepted_comparisons_excluded_from_revenue: int = 0
+    # Only for roles that may see financial summaries. Absent from the response otherwise.
+    total_revenue: Optional[Decimal] = None
+    accepted_comparisons_excluded_from_revenue: Optional[int] = None
     pending_followups: int
     available_inventory: int
     reserved_inventory: int

@@ -34,6 +34,15 @@ MANAGEMENT_ROLES: Set[str] = {
     RoleEnum.HEAD_OF_SALES.value,
 }
 
+# Totals and summaries of money: revenue, pipeline value, averages. Head of Sales isn't included.
+FINANCIAL_SUMMARY_ROLES: Set[str] = {
+    RoleEnum.ADMIN.value,
+    RoleEnum.DEALER_OWNER.value,
+    RoleEnum.OWNER.value,
+}
+
+CUSTOMER_DELETE_ROLES: Set[str] = FINANCIAL_SUMMARY_ROLES
+
 SALES_ROLES: Set[str] = {
     RoleEnum.ADMIN.value,
     RoleEnum.DEALER_OWNER.value,

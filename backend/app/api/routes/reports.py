@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_current_user, require_roles
-from app.core.permissions import MANAGEMENT_ROLES, RoleEnum
+from app.core.permissions import FINANCIAL_SUMMARY_ROLES, MANAGEMENT_ROLES, RoleEnum
 from app.services.access_policy import is_scoped_reader
 from app.services.daily_export_service import DailyExportService, today_ist
 from app.database.dependencies import get_db
@@ -30,7 +30,7 @@ async def daily_export(
     format: Literal["xlsx", "csv"] = Query("xlsx", description="xlsx (Excel workbook) or csv"),
     day: Optional[date] = Query(None, description="Day to export (YYYY-MM-DD, Indian time). Defaults to today."),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_roles(*MANAGEMENT_ROLES, RoleEnum.SALES_EXECUTIVE.value)),
+    current_user: User = Depends(require_roles(*MANAGEMENT_ROLES, RoleEnum.SALES_EXECUTIVE.value, RoleEnum.SALESPERSON.value)),
 ):
     day = day or today_ist()
     # Salespeople export only their own records; management exports everyone's
@@ -38,10 +38,12 @@ async def daily_export(
     scope = f"Own records of {current_user.full_name}" if scoped else "All staff"
     sections = await DailyExportService(db).build(day, scoped_user_id=current_user.id if scoped else None)
     name = f"daily-update-{day.isoformat()}.{format}"
+    # Rows keep each quotation's price. Only the total across quotations is restricted.
+    totals = current_user.role.name in FINANCIAL_SUMMARY_ROLES
     if format == "csv":
-        content, media = DailyExportService.to_csv(day, sections, scope), "text/csv; charset=utf-8"
+        content, media = DailyExportService.to_csv(day, sections, scope, totals), "text/csv; charset=utf-8"
     else:
-        content = DailyExportService.to_xlsx(day, sections, scope)
+        content = DailyExportService.to_xlsx(day, sections, scope, totals)
         media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     return Response(content=content, media_type=media,
                     headers={"Content-Disposition": f'attachment; filename="{name}"'})
@@ -57,7 +59,7 @@ async def get_sales_report(
     to_date: Optional[datetime] = Query(None, description="End date filter"),
     limit: int = Query(100, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_roles(*MANAGEMENT_ROLES)),
+    current_user: User = Depends(require_roles(*FINANCIAL_SUMMARY_ROLES)),
 ):
     service = ReportService(db)
     items = await service.get_sales_report(from_date=from_date, to_date=to_date, limit=limit)
