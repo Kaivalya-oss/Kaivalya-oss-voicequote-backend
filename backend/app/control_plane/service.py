@@ -194,7 +194,8 @@ class ControlPlaneService:
     async def _duplicate_tenant(self, error: IntegrityError) -> NoReturn:
         # A repeated or concurrent request: the unique slug/email keeps only one showroom.
         await self.session.rollback()
-        logger.info(f"Showroom registration conflict on {getattr(error.orig, 'constraint_name', 'unknown')}")
+        constraint = getattr(error.orig, "constraint_name", "unknown")
+        logger.info(f"Showroom registration conflict on {constraint}")
         raise ConflictException("SHOWROOM_ALREADY_EXISTS", "This showroom or account is already registered.")
 
     # ---------- sessions ----------

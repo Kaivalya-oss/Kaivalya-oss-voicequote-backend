@@ -8,6 +8,7 @@ engine = create_async_engine(
     pool_pre_ping=True,
     pool_size=10,
     max_overflow=20,
+    hide_parameters=True,  # error messages must never quote stored values
 )
 
 # Create session maker

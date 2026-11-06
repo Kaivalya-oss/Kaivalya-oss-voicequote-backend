@@ -113,7 +113,7 @@ class AIService:
                             provider="Google Gemini (gemini-2.5-flash)",
                         )
             except Exception as e:
-                logger.warning(f"Gemini API invocation failed, falling back to rule engine: {e}")
+                logger.warning(f"Gemini API invocation failed, falling back to rule engine: {type(e).__name__}")
 
         # Deterministic Heuristic Engine Fallback
         scored_vehicles: List[RecommendedVehicle] = []
@@ -238,7 +238,7 @@ class AIService:
                         provider="Google Gemini (gemini-2.5-flash)",
                     )
             except Exception as e:
-                logger.warning(f"Gemini API lead insight call failed, falling back: {e}")
+                logger.warning(f"Gemini API lead insight call failed, falling back: {type(e).__name__}")
 
         # Deterministic Heuristic Insight Fallback
         prob = "MEDIUM"

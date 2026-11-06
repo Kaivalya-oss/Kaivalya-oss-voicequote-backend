@@ -83,7 +83,12 @@ def create_app() -> FastAPI:
 
     @application.middleware("http")
     async def _security_headers(request: Request, call_next):
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            # Stops here, or the server would log it again with its full message.
+            logger.error("Unhandled %s on %s %s", type(exc).__name__, request.method, request.url.path)
+            response = _error(status.HTTP_500_INTERNAL_SERVER_ERROR, "INTERNAL_SERVER_ERROR", "Something went wrong.")
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"

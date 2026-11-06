@@ -19,7 +19,7 @@ async def _for_each_database(job: str, run) -> None:
             async with AsyncSessionLocal() as session:
                 await run(session)
         except Exception as e:
-            logger.error(f"Error executing {job} job: {e}")
+            logger.error(f"Error executing {job} job: {type(e).__name__}")
         return
 
     from app.control_plane.models import ConnectionStatus, Tenant, TenantConnection, TenantStatus
@@ -136,7 +136,7 @@ def start_scheduler():
             scheduler.start()
             logger.info("APScheduler background scheduler started.")
         except Exception as e:
-            logger.warning(f"Could not start background scheduler: {e}")
+            logger.warning(f"Could not start background scheduler: {type(e).__name__}")
 
 
 def shutdown_scheduler():

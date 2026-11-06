@@ -368,12 +368,18 @@ async def test_disabled_admin_loses_access_immediately(fresh_admin, admin_client
 
 # ---------- only one admin, no public creation ----------
 
+def admin_route_table() -> dict:
+    # The OpenAPI table includes routes from nested routers, which app.routes alone doesn't list.
+    return admin_app.openapi()["paths"]
+
+
 async def test_no_route_can_create_a_platform_admin():
-    paths = [(route.path, sorted(route.methods or [])) for route in admin_app.routes if hasattr(route, "methods")]
-    for path, _ in paths:
-        assert path == "/health" or path.startswith("/api/v1/admin/"), path
-    joined = " ".join(p for p, _ in paths).lower()
-    for word in ("register", "signup", "sign-up", "/admins", "create"):
+    paths = admin_route_table()
+    assert "/api/v1/admin/auth/login" in paths and "/api/v1/admin/me" in paths and len(paths) >= 10
+    for path in paths:
+        assert path.startswith("/api/v1/admin/"), path
+    joined = " ".join(paths).lower()
+    for word in ("register", "signup", "sign-up", "/admins", "create-admin"):
         assert word not in joined
 
 
@@ -476,7 +482,9 @@ def test_admin_process_cannot_load_showroom_code_or_config():
 async def test_showroom_app_serves_no_admin_routes(client):
     from app.main import app as showroom_app
 
-    assert not [r.path for r in showroom_app.routes if getattr(r, "path", "").startswith("/api/v1/admin")]
+    paths = showroom_app.openapi()["paths"]
+    assert "/api/v1/customers" in paths  # proves this is the full table
+    assert not [p for p in paths if p.startswith("/api/v1/admin")]
     assert (await client.post("/api/v1/admin/auth/login", json={"email": EMAIL, "password": PASSWORD})).status_code == 404
 
 

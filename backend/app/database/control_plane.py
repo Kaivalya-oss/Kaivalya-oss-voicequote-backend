@@ -15,7 +15,7 @@ def control_sessionmaker() -> async_sessionmaker[AsyncSession]:
         if not settings.CONTROL_PLANE_DATABASE_URL:
             raise RuntimeError("CONTROL_PLANE_DATABASE_URL is required when MULTI_TENANT_ENABLED is true.")
         _engine = create_async_engine(
-            settings.CONTROL_PLANE_DATABASE_URL, pool_pre_ping=True, pool_size=5, max_overflow=10
+            settings.CONTROL_PLANE_DATABASE_URL, pool_pre_ping=True, pool_size=5, max_overflow=10, hide_parameters=True
         )
         _sessionmaker = async_sessionmaker(_engine, class_=AsyncSession, expire_on_commit=False, autoflush=False)
     return _sessionmaker
