@@ -37,6 +37,13 @@ class TenantStatus(str, Enum):
     CANCELLED = "CANCELLED"
 
 
+class OnboardingStage(str, Enum):
+    CREATED = "CREATED"  # central record exists, invitation not yet delivered
+    INVITED = "INVITED"
+    DATABASE_SETUP = "DATABASE_SETUP"  # Owner accepted, database not yet verified
+    COMPLETE = "COMPLETE"
+
+
 class SubscriptionStatus(str, Enum):
     PENDING = "PENDING"
     ACTIVE = "ACTIVE"
@@ -90,6 +97,7 @@ class Tenant(ControlPlaneBase, TimestampMixin):
     __table_args__ = (
         CheckConstraint(f"status IN ({_values(TenantStatus)})", name="ck_tenants_status"),
         CheckConstraint(f"subscription_status IN ({_values(SubscriptionStatus)})", name="ck_tenants_subscription_status"),
+        CheckConstraint(f"onboarding_stage IN ({_values(OnboardingStage)})", name="ck_tenants_onboarding_stage"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -99,6 +107,20 @@ class Tenant(ControlPlaneBase, TimestampMixin):
     subscription_status: Mapped[str] = mapped_column(
         String(20), default=SubscriptionStatus.PENDING.value, nullable=False
     )
+    public_code: Mapped[str] = mapped_column(String(20), unique=True, nullable=False)
+    onboarding_stage: Mapped[str] = mapped_column(String(20), default=OnboardingStage.CREATED.value, nullable=False)
+    # Registered business details, used later to verify an Owner recovery request.
+    legal_business_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    business_registration_number: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)
+    business_address: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)
+    city: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    state: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    contact_phone: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    primary_owner_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_by_admin_id: Mapped[Optional[uuid.UUID]] = mapped_column(Uuid, nullable=True)
+    suspended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    suspended_by_admin_id: Mapped[Optional[uuid.UUID]] = mapped_column(Uuid, nullable=True)
+    suspension_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     connection: Mapped[Optional["TenantConnection"]] = relationship(back_populates="tenant", uselist=False)
 

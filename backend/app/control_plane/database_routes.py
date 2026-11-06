@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, SecretStr, field_validator
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.control_plane.models import ConnectionStatus, TenantConnection, TenantRole, TenantStatus
+from app.control_plane.models import ConnectionStatus, OnboardingStage, TenantConnection, TenantRole, TenantStatus
 from app.control_plane.schemas import ConnectionDetails
 from app.core.exceptions import AppException, ConflictException
 from app.core.logging import logger
@@ -16,13 +16,21 @@ from app.core.tenant_context import TenantContext, require_tenant_roles
 from app.core.config import settings
 from app.database.connection_manager import build_engine, connection_manager, dispose_in_background
 from app.database.control_plane import get_control_db
-from app.database.provisioning import check_connection, provision_database, provisioning_in_progress, verify_schema
+from app.database.provisioning import check_connection, latest_schema_version, provision_database, provisioning_in_progress, verify_schema
 from app.database.secrets import SecretNotFound, get_secret_store
 from app.database.tenant_connection import HOSTNAME_RE, TenantDatabaseError, TenantDbCredentials, classify_connection_error
+from app.platform_admin.models import AuditEvent
 from app.schemas.common import SuccessResponse
 
 router = APIRouter(prefix="/platform/tenants/current/database", tags=["Showroom Database"])
 owner_only = require_tenant_roles(TenantRole.OWNER)
+# Disconnecting is the one thing a suspended Owner may do: it's their database.
+owner_even_if_suspended = require_tenant_roles(TenantRole.OWNER, allow_suspended=True)
+
+DISCONNECT_NOTICE = (
+    "VoiceQuote's stored connection details were removed and its connections closed. This didn't change the "
+    "password on your database server, so change it there too if you want to revoke it."
+)
 
 DatabaseProvider = Literal["SUPABASE", "NEON", "AWS_RDS", "AZURE", "OTHER"]
 
@@ -60,6 +68,10 @@ class DatabaseConnectionRequest(BaseModel):
 class RotateCredentialsRequest(BaseModel):
     username: Optional[str] = Field(None, min_length=1, max_length=63)
     password: SecretStr = Field(..., min_length=1, max_length=512)
+
+
+class DisconnectResponse(ConnectionDetails):
+    notice: str = DISCONNECT_NOTICE
 
 
 class HealthResponse(BaseModel):
@@ -143,6 +155,7 @@ async def connect_database(
     conn.last_health_check = datetime.now(timezone.utc)
     conn.last_error_code = None
     tenant = await session.merge(ctx.tenant)
+    tenant.onboarding_stage = OnboardingStage.COMPLETE.value
     if tenant.status == TenantStatus.PENDING_SETUP.value:
         tenant.status = TenantStatus.ACTIVE.value
     await session.commit()
@@ -175,21 +188,25 @@ async def migrate_database(ctx: TenantContext = Depends(owner_only), session: As
     return SuccessResponse(data=_details(conn))
 
 
-async def _probe_health(creds: TenantDbCredentials) -> Optional[str]:
-    """Returns an error code. Every failure, including an unresolvable host, is a health result to record."""
+async def _probe_health(creds: TenantDbCredentials) -> tuple[Optional[str], Optional[str]]:
+    """Returns (error code, schema version). Every failure, including an unresolvable host, is a health result to record."""
     engine = None
+    version = None
     try:
         engine = await asyncio.to_thread(build_engine, creds, 1)
         async with engine.connect() as db:
             tls = (await db.execute(text("SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()"))).scalar_one()
             if tls is not True:
-                return "TENANT_DB_TLS_FAILED"
+                return "TENANT_DB_TLS_FAILED", None
+            version = (await db.execute(text("SELECT version_num FROM alembic_version"))).scalar_one_or_none()
+        if version != latest_schema_version():
+            return "TENANT_DB_SCHEMA_OUTDATED", version
         await verify_schema(engine)
-        return None
+        return None, version
     except AppException as err:
-        return err.code
+        return err.code, version
     except Exception:
-        return "TENANT_DB_UNAVAILABLE"
+        return "TENANT_DB_UNAVAILABLE", version
     finally:
         if engine is not None:
             dispose_in_background(engine)
@@ -200,14 +217,17 @@ async def check_health(ctx: TenantContext = Depends(owner_only), session: AsyncS
     conn = await _locked_connection(session, ctx)
     await session.commit()  # no row lock is held while talking to the showroom's database
     creds = await _stored_credentials(conn)
+    version = None
     try:
-        error_code = await asyncio.wait_for(_probe_health(creds), timeout=settings.TENANT_DB_HEALTH_TIMEOUT)
+        error_code, version = await asyncio.wait_for(_probe_health(creds), timeout=settings.TENANT_DB_HEALTH_TIMEOUT)
     except TimeoutError:
         error_code = "TENANT_DB_TIMEOUT"
     now = datetime.now(timezone.utc)
     conn = await _locked_connection(session, ctx)
     conn.last_health_check = now
     conn.last_error_code = error_code
+    if version is not None:
+        conn.schema_version = version
     await session.commit()
     return SuccessResponse(data=HealthResponse(healthy=error_code is None, error_code=error_code, checked_at=now))
 
@@ -247,8 +267,8 @@ async def rotate_credentials(
     return SuccessResponse(data=_details(conn))
 
 
-@router.post("/revoke", response_model=SuccessResponse[ConnectionDetails])
-async def revoke_connection(ctx: TenantContext = Depends(owner_only), session: AsyncSession = Depends(get_control_db)):
+@router.post("/revoke", response_model=SuccessResponse[DisconnectResponse])
+async def revoke_connection(ctx: TenantContext = Depends(owner_even_if_suspended), session: AsyncSession = Depends(get_control_db)):
     """Disconnect VoiceQuote from this database. The showroom's data stays untouched in its own database."""
     conn = await _locked_connection(session, ctx)
     reference = conn.secret_reference
@@ -258,9 +278,17 @@ async def revoke_connection(ctx: TenantContext = Depends(owner_only), session: A
     tenant = await session.merge(ctx.tenant)
     if tenant.status == TenantStatus.ACTIVE.value:
         tenant.status = TenantStatus.PENDING_SETUP.value
+    if tenant.onboarding_stage == OnboardingStage.COMPLETE.value:
+        tenant.onboarding_stage = OnboardingStage.DATABASE_SETUP.value
+    session.add(
+        AuditEvent(
+            actor_type="SHOWROOM_ACCOUNT", actor_id=ctx.user.id, action="DATABASE_DISCONNECTED", target_type="SHOWROOM",
+            target_id=str(ctx.tenant.id), tenant_id=ctx.tenant.id,
+        )
+    )
     await session.commit()
     await connection_manager.disconnect(ctx.tenant.id)
     if reference:
         await asyncio.to_thread(get_secret_store().delete, reference)
     logger.info(f"Tenant {ctx.tenant.id} revoked its database connection")
-    return SuccessResponse(data=_details(conn))
+    return SuccessResponse(data=DisconnectResponse(**_details(conn).model_dump()))

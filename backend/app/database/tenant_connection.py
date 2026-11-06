@@ -34,10 +34,12 @@ CONNECTION_ERROR_MESSAGES = {
     "TENANT_DB_MIGRATION_FAILED": "Setting up the database failed and was rolled back. It is safe to retry.",
     "TENANT_DB_VERIFICATION_FAILED": "The database could not be verified after setup.",
     "TENANT_DB_UNAVAILABLE": "The showroom database is unavailable right now. Try again shortly.",
+    "TENANT_DB_SCHEMA_OUTDATED": "This showroom's database needs an update before it can be used. Its Owner or VoiceQuote support can complete this.",
     "TENANT_DB_BUSY": "Too many requests are using showroom databases right now. Try again shortly.",
 }
 _STATUS = {
     "TENANT_DB_UNAVAILABLE": status.HTTP_503_SERVICE_UNAVAILABLE,
+    "TENANT_DB_SCHEMA_OUTDATED": status.HTTP_503_SERVICE_UNAVAILABLE,
     "TENANT_DB_BUSY": status.HTTP_503_SERVICE_UNAVAILABLE,
 }
 

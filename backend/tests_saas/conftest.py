@@ -35,6 +35,9 @@ os.environ["ADMIN_JWT_SECRET_KEY"] = "admin-test-signing-key-" + uuid.uuid4().he
 os.environ["ADMIN_MFA_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
 os.environ["ADMIN_ALLOWED_ORIGINS"] = "https://admin.test.invalid"
 os.environ["ADMIN_ENV"] = "test"
+os.environ["ADMIN_SMTP_HOST"] = "smtp.test.invalid"
+os.environ["ADMIN_SMTP_FROM"] = "invitations@test.invalid"
+os.environ["ADMIN_OWNER_INVITE_URL"] = "https://app.test.invalid/showroom/invite"
 
 import asyncpg  # noqa: E402
 import pytest  # noqa: E402
@@ -97,18 +100,27 @@ def unique(prefix: str = "x") -> str:
     return f"{prefix}{uuid.uuid4().hex[:10]}"
 
 
-async def register(client: AsyncClient, name: str | None = None, email: str | None = None) -> dict:
+async def create_showroom(name: str | None = None, email: str | None = None, full_name: str = "Show Owner") -> tuple[str, str]:
+    """The onboarding records exactly as the Platform Admin's API creates them. Returns (raw token, owner email)."""
+    from app.database.control_plane import control_sessionmaker
+    from app.platform_admin.showrooms import CreateShowroomRequest, create_showroom_records
+    from app.platform_admin.service import RequestMeta
+
     tag = unique()
-    res = await client.post(
-        "/api/v1/platform/showrooms/register",
-        json={
-            "showroom_name": name or f"Showroom {tag}",
-            "email": email or f"owner-{tag}@example.com",
-            "password": "OwnerPass123!",
-            "full_name": "Show Owner",
-        },
-    )
-    assert res.status_code == 201, res.text
+    email = email or f"owner-{tag}@example.com"
+    req = CreateShowroomRequest(showroom_name=name or f"Showroom {tag}", legal_business_name=f"Showroom {tag} Pvt Ltd", owner_email=email, owner_full_name=full_name)
+    async with control_sessionmaker()() as session:
+        _, token, _ = await create_showroom_records(session, req, None, RequestMeta())
+    return token, email
+
+
+async def register(client: AsyncClient, name: str | None = None, email: str | None = None, password: str = "OwnerPass123!", existing_token: str | None = None) -> dict:
+    """A showroom with an Owner who has accepted their invitation. Public registration no longer exists."""
+    token, email = await create_showroom(name, email)
+    headers = H(existing_token) if existing_token else None
+    body = {"token": token} if existing_token else {"token": token, "full_name": "Show Owner", "password": password}
+    res = await client.post("/api/v1/platform/invitations/accept", json=body, headers=headers)
+    assert res.status_code == 200, res.text
     return res.json()["data"]
 
 

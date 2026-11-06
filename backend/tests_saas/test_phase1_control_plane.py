@@ -43,36 +43,6 @@ async def test_setup_status_and_no_secrets_in_responses(client: AsyncClient):
     assert "secret_reference" not in res.text and "password" not in res.text
 
 
-async def test_duplicate_registration_prevented(client: AsyncClient):
-    email = f"dup-{unique()}@example.com"
-    name = f"Dup {unique()}"
-    await register(client, name=name, email=email)
-    again = await client.post(f"{P}/showrooms/register", json={
-        "showroom_name": name, "email": email, "password": "OwnerPass123!", "full_name": "Show Owner"})
-    assert again.status_code == 409
-    other_email = await client.post(f"{P}/showrooms/register", json={
-        "showroom_name": name, "email": f"other-{unique()}@example.com", "password": "OwnerPass123!", "full_name": "Show Owner"})
-    assert other_email.status_code == 409 and other_email.json()["error"]["code"] == "SHOWROOM_ALREADY_EXISTS"
-
-
-async def test_concurrent_registration_creates_one_showroom(client: AsyncClient):
-    name, email = f"Race {unique()}", f"race-{unique()}@example.com"
-    body = {"showroom_name": name, "email": email, "password": "OwnerPass123!", "full_name": "Show Owner"}
-    results = await asyncio.gather(*[client.post(f"{P}/showrooms/register", json=body) for _ in range(4)])
-    assert sorted(r.status_code for r in results) == [201, 409, 409, 409]
-
-
-async def test_failed_registration_leaves_nothing_behind(client: AsyncClient):
-    name = f"Atomic {unique()}"
-    await register(client, name=name)
-    email = f"atomic-{unique()}@example.com"
-    res = await client.post(f"{P}/showrooms/register", json={
-        "showroom_name": name, "email": email, "password": "OwnerPass123!", "full_name": "Show Owner"})
-    assert res.status_code == 409
-    login = await client.post(f"{P}/auth/login", json={"email": email, "password": "OwnerPass123!"})
-    assert login.status_code == 401  # the user row rolled back with the conflicting tenant
-
-
 async def test_login_is_generic_and_multi_showroom_user_must_choose(client: AsyncClient):
     a = await register(client)
     email = a["user"]["email"]
@@ -82,7 +52,7 @@ async def test_login_is_generic_and_multi_showroom_user_must_choose(client: Asyn
     one = (await client.post(f"{P}/auth/login", json={"email": email, "password": "OwnerPass123!"})).json()["data"]
     assert one["active_tenant"]["tenant_id"] == a["active_tenant"]["tenant_id"]
 
-    await client.post(f"{P}/showrooms", headers=H(a["access_token"]), json={"showroom_name": f"Second {unique()}"})
+    await register(client, email=email, existing_token=a["access_token"])
     two = (await client.post(f"{P}/auth/login", json={"email": email, "password": "OwnerPass123!"})).json()["data"]
     assert two["active_tenant"] is None
     res = await client.get(f"{P}/tenants/current", headers=H(two["access_token"]))
@@ -185,13 +155,11 @@ async def test_deactivated_member_loses_access_immediately_even_on_refresh(clien
     sales = await invite_and_join(client, a["access_token"], "SALESPERSON")
     mid = sales["active_tenant"]["membership_id"]
     assert (await client.post(f"{P}/tenants/current/members/{mid}/deactivate", headers=H(a["access_token"]))).status_code == 200
-    assert (await client.get(f"{P}/tenants/current", headers=H(sales["access_token"]))).status_code == 403
-    refreshed = (await client.post(f"{P}/auth/refresh", json={"refresh_token": sales["refresh_token"]})).json()["data"]
-    assert refreshed["active_tenant"] is None
-    assert (await client.get(f"{P}/tenants/current", headers=H(refreshed["access_token"]))).status_code == 409
-    select_again = await client.post(f"{P}/tenants/select", headers=H(refreshed["access_token"]),
-                                     json={"tenant_id": a["active_tenant"]["tenant_id"]})
-    assert select_again.status_code == 403
+    assert (await client.get(f"{P}/tenants/current", headers=H(sales["access_token"]))).status_code == 401
+    # Their only membership has gone, so no token of any kind can be refreshed, and they can't sign in.
+    assert (await client.post(f"{P}/auth/refresh", json={"refresh_token": sales["refresh_token"]})).status_code == 401
+    assert (await client.post(f"{P}/auth/login", json={"email": sales["user"]["email"], "password": "StaffPass123!"})).status_code == 401
+    assert (await client.get(f"{P}/me", headers=H(sales["access_token"]))).status_code == 401
 
 
 async def test_showroom_keeps_at_least_one_active_owner(client: AsyncClient):

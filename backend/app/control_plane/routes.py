@@ -8,7 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.control_plane.models import PlatformUser, TenantRole
 from app.control_plane.schemas import (
     AcceptInvitationRequest,
-    CreateShowroomRequest,
     InvitationResponse,
     InviteRequest,
     MeResponse,
@@ -17,7 +16,6 @@ from app.control_plane.schemas import (
     PlatformLoginRequest,
     PlatformUserResponse,
     RefreshRequest,
-    RegisterShowroomRequest,
     SelectTenantRequest,
     SetupStatusResponse,
     TenantResponse,
@@ -41,21 +39,6 @@ from app.schemas.common import SuccessResponse
 router = APIRouter(prefix="/platform", tags=["Platform"])
 
 owner_only = require_tenant_roles(TenantRole.OWNER)
-
-
-@router.post("/showrooms/register", response_model=SuccessResponse[TokenPairResponse], status_code=status.HTTP_201_CREATED)
-async def register_showroom(req: RegisterShowroomRequest, session: AsyncSession = Depends(get_control_db)):
-    """Create the owner's account and the showroom. It stays PENDING_SETUP until its database is verified."""
-    return SuccessResponse(data=await ControlPlaneService(session).register_showroom(req))
-
-
-@router.post("/showrooms", response_model=SuccessResponse[TokenPairResponse], status_code=status.HTTP_201_CREATED)
-async def create_additional_showroom(
-    req: CreateShowroomRequest,
-    user: PlatformUser = Depends(get_platform_user),
-    session: AsyncSession = Depends(get_control_db),
-):
-    return SuccessResponse(data=await ControlPlaneService(session).create_showroom(user, req))
 
 
 @router.post("/auth/login", response_model=SuccessResponse[TokenPairResponse])
@@ -157,7 +140,7 @@ async def deactivate_member(
     ctx: TenantContext = Depends(owner_only),
     session: AsyncSession = Depends(get_control_db),
 ):
-    membership = await ControlPlaneService(session).deactivate_member(ctx.tenant.id, membership_id)
+    membership = await ControlPlaneService(session).deactivate_member(ctx.tenant.id, membership_id, ctx.user.id)
     return SuccessResponse(data=member_response(membership))
 
 

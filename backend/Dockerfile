@@ -41,7 +41,7 @@ COPY alembic.ini alembic_control.ini ./
 COPY alembic ./alembic
 COPY alembic_control ./alembic_control
 COPY app ./app
-COPY scripts/create_admin.py scripts/bootstrap_platform_admin.py ./scripts/
+COPY scripts/create_admin.py scripts/bootstrap_platform_admin.py scripts/migrate_showrooms.py ./scripts/
 
 USER appuser
 

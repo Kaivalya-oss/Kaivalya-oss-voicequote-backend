@@ -22,6 +22,9 @@ MIN_PASSWORD_LENGTH = 14
 # Published in the repository as development accounts, so they can never protect this account.
 PUBLISHED_PASSWORDS = frozenset({"AdminPass123!", "OwnerPass123!", "SalesPass123!", "FinancePass123!", "InventoryPass123!"})
 
+# The development accounts' addresses, likewise never usable for a real Owner.
+PUBLISHED_EMAILS = frozenset({"admin@dealership.com", "owner@dealership.com", "sales@dealership.com", "finance@dealership.com", "inventory@dealership.com"})
+
 TOTP_DIGITS = 6
 TOTP_PERIOD_SECONDS = 30
 TOTP_ALLOWED_DRIFT_STEPS = 1

@@ -43,6 +43,16 @@ class AdminSettings(BaseSettings):
     ADMIN_TRUSTED_PROXY_IPS: str = ""  # comma separated. Empty means forwarded headers are never trusted.
     ADMIN_COOKIE_SECURE: bool = True
 
+    # Owner invitations. Without these, showrooms can't be created, rather than sending nothing silently.
+    ADMIN_SMTP_HOST: str = ""
+    ADMIN_SMTP_PORT: int = 587
+    ADMIN_SMTP_USER: str = ""
+    ADMIN_SMTP_PASSWORD: str = ""
+    ADMIN_SMTP_FROM: str = ""
+    ADMIN_SMTP_STARTTLS: bool = True
+    ADMIN_OWNER_INVITE_URL: str = ""  # the showroom app's invitation page
+    ADMIN_INVITATION_EXPIRE_HOURS: int = 72
+
     ADMIN_ACCESS_TOKEN_MINUTES: int = 10
     ADMIN_MFA_TOKEN_MINUTES: int = 5
     ADMIN_SESSION_IDLE_MINUTES: int = 30
@@ -80,6 +90,15 @@ class AdminSettings(BaseSettings):
     def _secure_cookie_outside_development(self) -> "AdminSettings":
         if not self.ADMIN_COOKIE_SECURE and self.ADMIN_ENV.strip().lower() not in DEV_ENVIRONMENTS:
             raise ValueError("ADMIN_COOKIE_SECURE can only be disabled in development or test.")
+        return self
+
+    @model_validator(mode="after")
+    def _secure_invitations_in_production(self) -> "AdminSettings":
+        if self.ADMIN_ENV.strip().lower() == "production":
+            if not self.ADMIN_SMTP_STARTTLS:
+                raise ValueError("ADMIN_SMTP_STARTTLS can't be disabled in production.")
+            if self.ADMIN_OWNER_INVITE_URL and not self.ADMIN_OWNER_INVITE_URL.startswith("https://"):
+                raise ValueError("ADMIN_OWNER_INVITE_URL must use https in production.")
         return self
 
     @property

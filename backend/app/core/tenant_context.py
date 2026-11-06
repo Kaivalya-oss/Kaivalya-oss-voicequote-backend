@@ -7,6 +7,7 @@ effect immediately, even for tokens that have not expired.
 """
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 from fastapi import Depends, status
@@ -18,6 +19,7 @@ from app.control_plane.models import (
     AccountStatus,
     ConnectionStatus,
     MembershipStatus,
+    OnboardingStage,
     PlatformUser,
     Tenant,
     TenantConnection,
@@ -68,9 +70,24 @@ async def load_active_user(session: AsyncSession, payload: Dict[str, Any]) -> Pl
     except ValueError:
         raise UnauthorizedException("Invalid token.")
     user = await session.get(PlatformUser, user_id)
-    if not user or user.account_status != AccountStatus.ACTIVE.value:
+    if not user or user.account_status != AccountStatus.ACTIVE.value or not await account_has_access(session, user.id):
         raise UnauthorizedException("Account is not active.")
     return user
+
+
+async def account_has_access(session: AsyncSession, user_id: uuid.UUID) -> bool:
+    """An account needs a live membership or a pending invitation. One with only deactivated memberships has neither."""
+    rows = await session.execute(
+        select(TenantMembership.status, TenantMembership.invitation_expires_at).where(
+            TenantMembership.user_id == user_id,
+            TenantMembership.status.in_([MembershipStatus.ACTIVE.value, MembershipStatus.INVITED.value]),
+        )
+    )
+    now = datetime.now(timezone.utc)
+    return any(
+        status_ == MembershipStatus.ACTIVE.value or (expires is not None and expires > now)
+        for status_, expires in rows
+    )
 
 
 async def resolve_tenant_context(session: AsyncSession, payload: Dict[str, Any]) -> TenantContext:
@@ -109,6 +126,12 @@ async def resolve_tenant_context(session: AsyncSession, payload: Dict[str, Any])
 def tenant_not_operational(ctx: TenantContext) -> AppException:
     if ctx.tenant.status == TenantStatus.SUSPENDED.value:
         return AppException("TENANT_SUSPENDED", "This showroom is suspended.", status.HTTP_403_FORBIDDEN)
+    if ctx.connection is not None and ctx.connection.connection_status == ConnectionStatus.PROVISIONING.value and ctx.tenant.onboarding_stage == OnboardingStage.COMPLETE.value:
+        return AppException(
+            "TENANT_DB_MAINTENANCE",
+            "This showroom's database is being updated. Try again shortly.",
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
     return AppException(
         "TENANT_NOT_OPERATIONAL",
         "This showroom cannot be used until its database connection is set up and verified.",
@@ -134,13 +157,18 @@ async def get_tenant_context(
     return await resolve_tenant_context(session, payload)
 
 
-def require_tenant_roles(*roles: TenantRole) -> Callable[..., Awaitable[TenantContext]]:
-    """Reusable dependency: an active member of the selected showroom holding one of these roles."""
+def require_tenant_roles(*roles: TenantRole, allow_suspended: bool = False) -> Callable[..., Awaitable[TenantContext]]:
+    """Reusable dependency: an active member of the selected showroom holding one of these roles.
+
+    A suspended showroom is refused for every role, Owners included, unless a route opts in.
+    """
     allowed = {r.value for r in roles}
 
     async def checker(ctx: TenantContext = Depends(get_tenant_context)) -> TenantContext:
         if ctx.role not in allowed:
             raise ForbiddenException("Your role does not allow this action.")
+        if ctx.tenant.status == TenantStatus.SUSPENDED.value and not allow_suspended:
+            raise tenant_not_operational(ctx)
         return ctx
 
     return checker

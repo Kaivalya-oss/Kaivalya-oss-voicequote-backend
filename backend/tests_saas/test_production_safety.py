@@ -3,31 +3,24 @@ import pytest
 from httpx import AsyncClient
 
 from app.core.config import settings
-from tests_saas.conftest import unique
+from tests_saas.conftest import create_showroom, register, unique
 
-REGISTER = "/api/v1/platform/showrooms/register"
+ACCEPT = "/api/v1/platform/invitations/accept"
 LOGIN = "/api/v1/platform/auth/login"
 STRONG = "Str0ng-Unpublished-Passphrase"
 
 
-def body(email: str, password: str) -> dict:
-    return {"showroom_name": f"Safety {unique()}", "email": email, "password": password, "full_name": "Safety Test"}
-
-
-@pytest.mark.parametrize(
-    "email,password",
-    [("admin@dealership.com", STRONG), ("safety-new@example.com", "AdminPass123!")],
-)
-async def test_registration_refuses_dev_credentials_in_production(client: AsyncClient, monkeypatch, email, password):
+async def test_invitation_refuses_a_published_password_in_production(client: AsyncClient, monkeypatch):
+    token, _ = await create_showroom()
     monkeypatch.setattr(settings, "APP_ENV", "production")
-    r = await client.post(REGISTER, json=body(email, password))
+    r = await client.post(ACCEPT, json={"token": token, "full_name": "Safety Test", "password": "AdminPass123!"})
     assert r.status_code == 400
     assert r.json()["error"]["code"] == "CREDENTIAL_NOT_ALLOWED"
 
 
 async def test_login_refuses_published_password_in_production(client: AsyncClient, monkeypatch):
     email = f"{unique('safety')}@example.com"
-    assert (await client.post(REGISTER, json=body(email, "AdminPass123!"))).status_code == 201
+    await register(client, email=email, password="AdminPass123!")
     assert (await client.post(LOGIN, json={"email": email, "password": "AdminPass123!"})).status_code == 200
 
     monkeypatch.setattr(settings, "APP_ENV", "production")
@@ -38,6 +31,6 @@ async def test_login_refuses_published_password_in_production(client: AsyncClien
 
 async def test_ordinary_account_still_signs_in_in_production(client: AsyncClient, monkeypatch):
     email = f"{unique('safety')}@example.com"
-    assert (await client.post(REGISTER, json=body(email, STRONG))).status_code == 201
+    await register(client, email=email, password=STRONG)
     monkeypatch.setattr(settings, "APP_ENV", "production")
     assert (await client.post(LOGIN, json={"email": email, "password": STRONG})).status_code == 200

@@ -17,11 +17,12 @@ from app.core.exceptions import AppException
 from app.platform_admin.config import forbidden_environment_present, get_admin_settings
 from app.platform_admin.database import admin_sessionmaker, boundary_violations, dispose_admin_engine, schema_version
 from app.platform_admin.routes import router
+from app.platform_admin.showrooms import router as showrooms_router
 from app.schemas.common import ErrorDetail, ErrorResponse
 
 logger = logging.getLogger("voicequote.platform_admin")
 
-EXPECTED_SCHEMA_VERSION = "c1a1_platform_admin"
+EXPECTED_SCHEMA_VERSION = "c2a1_showroom_onboarding"
 
 
 class AdminStartupRefused(RuntimeError):
@@ -112,6 +113,7 @@ def create_app() -> FastAPI:
         return {"status": "healthy"}
 
     application.include_router(router)
+    application.include_router(showrooms_router)
     return application
 
 

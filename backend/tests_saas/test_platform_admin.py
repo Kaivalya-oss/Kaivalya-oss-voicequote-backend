@@ -229,8 +229,6 @@ async def test_admin_tokens_cannot_authenticate_as_showroom_users(fresh_admin, a
     for path in ("/api/v1/platform/me", "/api/v1/platform/memberships", "/api/v1/platform/tenants/current", "/api/v1/customers", "/api/v1/quotations", "/api/v1/leads", "/api/v1/dashboard/summary"):
         res = await client.get(path, headers=H(token))
         assert res.status_code == 401, (path, res.status_code)
-    create = await client.post("/api/v1/platform/showrooms", headers=H(token), json={"showroom_name": "Not Allowed"})
-    assert create.status_code == 401
 
 
 @pytest.mark.parametrize(
@@ -430,6 +428,7 @@ async def test_bootstrap_refuses_weak_or_published_passwords(password):
 
 def test_published_password_list_matches_the_development_accounts():
     assert security.PUBLISHED_PASSWORDS == frozenset(a[3] for a in dev_accounts.DEV_ACCOUNTS)
+    assert security.PUBLISHED_EMAILS == frozenset(a[0] for a in dev_accounts.DEV_ACCOUNTS)
 
 
 @pytest.mark.parametrize("env", [{}, {"ADMIN_JWT_SECRET_KEY": ""}, {"ADMIN_JWT_SECRET_KEY": "short"}, {"ADMIN_MFA_ENCRYPTION_KEY": "not-a-key"}])
@@ -504,7 +503,7 @@ async def test_boundary_check_really_detects_a_powerful_role():
     async with control_sessionmaker()() as session:
         found = await boundary_violations(session)
     assert "read tenant secret references" in found and "create a platform admin" in found
-    assert len(FORBIDDEN_PRIVILEGE_CHECKS) >= 14
+    assert len(FORBIDDEN_PRIVILEGE_CHECKS) >= 17
 
 
 @pytest.mark.parametrize(

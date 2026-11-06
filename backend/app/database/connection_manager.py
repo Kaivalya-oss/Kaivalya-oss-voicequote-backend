@@ -13,6 +13,8 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import AsyncIterator, Coroutine, Dict
 
+from sqlalchemy import text
+from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import settings
@@ -33,6 +35,7 @@ class _Entry:
     secret_reference: str
     created_at: float
     last_used: float = 0.0
+    schema_checked: bool = False  # once per engine, so requests don't pay for it each time
 
 
 _background_cleanups: set[asyncio.Task] = set()
@@ -116,6 +119,19 @@ class TenantConnectionManager:
             await self._evict_over_limit()
             return new_entry
 
+    async def _check_schema(self, session: AsyncSession, tenant_id: uuid.UUID) -> None:
+        """Staff get a clear 503 on an older or unknown schema, not a 500 from a missing column."""
+        # Imported here because provisioning builds on this module.
+        from app.database.provisioning import latest_schema_version
+
+        try:
+            version = (await session.execute(text("SELECT version_num FROM alembic_version"))).scalar_one_or_none()
+        except ProgrammingError:
+            version = None
+        if version != latest_schema_version():
+            logger.warning(f"Tenant {tenant_id} database schema needs migrating")
+            raise TenantDatabaseError("TENANT_DB_SCHEMA_OUTDATED")
+
     async def _entry_for_request(self, tenant_id: uuid.UUID, secret_reference: str) -> _Entry:
         """For a stored connection any failure here is an outage, not a mistake the staff member can fix."""
         try:
@@ -169,6 +185,12 @@ class TenantConnectionManager:
                 # pooled connection runs here too, so a hung server cannot hold a request for
                 # the longer command timeout.
                 await asyncio.wait_for(session.connection(), timeout=settings.TENANT_DB_CONNECT_TIMEOUT)
+                if not entry.schema_checked:
+                    await asyncio.wait_for(self._check_schema(session, tenant_id), timeout=settings.TENANT_DB_CONNECT_TIMEOUT)
+                    entry.schema_checked = True
+            except TenantDatabaseError:
+                _in_background(session.close())
+                raise
             except Exception as exc:
                 code = classify_connection_error(exc).code
                 logger.warning(f"Tenant {tenant_id} database connection failed: {code}")

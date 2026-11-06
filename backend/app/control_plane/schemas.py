@@ -1,4 +1,3 @@
-import re
 import uuid
 from datetime import datetime
 from typing import List, Literal, Optional
@@ -8,34 +7,6 @@ from pydantic import BaseModel, EmailStr, Field, computed_field, field_validator
 from app.database.tenant_connection import CONNECTION_ERROR_MESSAGES
 
 TenantRoleName = Literal["OWNER", "HEAD_OF_SALES", "SALESPERSON"]
-SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-
-
-class _ShowroomFields(BaseModel):
-    showroom_name: str = Field(..., min_length=2, max_length=150)
-    slug: Optional[str] = Field(None, min_length=2, max_length=80)
-
-    @field_validator("showroom_name", mode="before")
-    @classmethod
-    def _strip_name(cls, v):
-        return v.strip() if isinstance(v, str) else v
-
-    @field_validator("slug")
-    @classmethod
-    def _check_slug(cls, v):
-        if v is not None and not SLUG_PATTERN.match(v):
-            raise ValueError("slug may contain lowercase letters, digits and single hyphens only")
-        return v
-
-
-class RegisterShowroomRequest(_ShowroomFields):
-    email: EmailStr
-    password: str = Field(..., min_length=8, max_length=72)
-    full_name: str = Field(..., min_length=2, max_length=150)
-
-
-class CreateShowroomRequest(_ShowroomFields):
-    pass
 
 
 class PlatformLoginRequest(BaseModel):
@@ -148,6 +119,11 @@ class SetupStatusResponse(BaseModel):
     subscription_status: str
     connection_status: str
     operational: bool
+    onboarding_stage: str
+    suspended_at: Optional[datetime] = None
+    schema_version: Optional[str] = None
+    required_schema_version: str
+    migration_required: bool = False
     next_step: Optional[str] = None
     # Present for Owners only.
     connection: Optional[ConnectionDetails] = None

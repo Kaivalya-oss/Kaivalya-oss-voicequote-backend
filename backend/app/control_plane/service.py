@@ -1,9 +1,8 @@
 import hashlib
-import re
 import secrets
 import uuid
-from datetime import date, datetime, timedelta, timezone
-from typing import List, NoReturn, Optional, Tuple
+from datetime import datetime, timedelta, timezone
+from typing import List, Optional, Tuple
 
 from fastapi import status
 from sqlalchemy import select
@@ -14,12 +13,9 @@ from app.control_plane.models import (
     AccountStatus,
     ConnectionStatus,
     MembershipStatus,
+    OnboardingStage,
     PlatformUser,
-    Subscription,
-    SubscriptionEvent,
-    SubscriptionStatus,
     Tenant,
-    TenantConnection,
     TenantMembership,
     TenantRole,
     TenantStatus,
@@ -27,11 +23,9 @@ from app.control_plane.models import (
 from app.control_plane.schemas import (
     AcceptInvitationRequest,
     ConnectionDetails,
-    CreateShowroomRequest,
     MembershipSummary,
     MemberResponse,
     PlatformUserResponse,
-    RegisterShowroomRequest,
     SetupStatusResponse,
     TokenPairResponse,
 )
@@ -44,10 +38,11 @@ from app.core.exceptions import (
     NotFoundException,
     UnauthorizedException,
 )
-from app.core.logging import logger
 from app.core.dev_accounts import is_refused_dev_credential
 from app.core.security import create_access_token, create_refresh_token, decode_token, hash_password, verify_password
-from app.core.tenant_context import PLATFORM_SCOPE, TenantContext
+from app.core.tenant_context import PLATFORM_SCOPE, TenantContext, account_has_access
+from app.database.provisioning import latest_schema_version
+from app.platform_admin.models import AuditEvent
 
 # Verified when an email is unknown, so login takes the same time either way.
 _DUMMY_HASH = hash_password("voicequote-timing-equalizer")
@@ -55,13 +50,6 @@ _DUMMY_HASH = hash_password("voicequote-timing-equalizer")
 
 def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
-
-
-def _slugify(name: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:80].strip("-")
-    if len(slug) < 2:
-        raise BadRequestException("INVALID_SHOWROOM_NAME", "Choose a showroom name containing letters or digits.")
-    return slug
 
 
 def _summary(m: TenantMembership) -> MembershipSummary:
@@ -126,78 +114,6 @@ class ControlPlaneService:
         rows = await self.active_memberships(user_id)
         return next((m for m in rows if m.tenant_id == tenant_id), None)
 
-    # ---------- registration ----------
-
-    async def _new_tenant_records(self, name: str, slug: Optional[str], owner: PlatformUser) -> TenantMembership:
-        """Everything a showroom starts with, added to the caller's single transaction."""
-        tenant = Tenant(id=uuid.uuid4(), showroom_name=name, slug=slug or _slugify(name))
-        self.session.add(tenant)
-        await self.session.flush()  # the records below reference tenant_id by value
-        membership = TenantMembership(
-            tenant=tenant, user=owner, role=TenantRole.OWNER.value, status=MembershipStatus.ACTIVE.value
-        )
-        subscription = Subscription(
-            id=uuid.uuid4(),
-            tenant_id=tenant.id,
-            plan_id=settings.SAAS_DEFAULT_PLAN_ID,
-            amount=settings.SAAS_DEFAULT_PLAN_AMOUNT,
-            currency=settings.SAAS_DEFAULT_CURRENCY,
-            status=SubscriptionStatus.PENDING.value,
-            start_date=date.today(),
-        )
-        event = SubscriptionEvent(
-            subscription_id=subscription.id,
-            event_type="SUBSCRIPTION_CREATED",
-            event_metadata={"plan_id": settings.SAAS_DEFAULT_PLAN_ID},
-        )
-        connection = TenantConnection(tenant_id=tenant.id, connection_status=ConnectionStatus.PENDING.value)
-        self.session.add_all([membership, subscription])
-        await self.session.flush()
-        self.session.add_all([event, connection])
-        return membership
-
-    async def register_showroom(self, req: RegisterShowroomRequest) -> TokenPairResponse:
-        email = req.email.lower()
-        if is_refused_dev_credential(email, req.password):
-            raise BadRequestException("CREDENTIAL_NOT_ALLOWED", "This email or password cannot be used.")
-        existing = (
-            await self.session.execute(select(PlatformUser).where(PlatformUser.email == email))
-        ).scalar_one_or_none()
-        if existing:
-            raise ConflictException(
-                "ACCOUNT_EXISTS", "An account with this email already exists. Sign in to add another showroom."
-            )
-        user = PlatformUser(
-            id=uuid.uuid4(),
-            email=email,
-            full_name=req.full_name.strip(),
-            password_hash=hash_password(req.password),
-            account_status=AccountStatus.ACTIVE.value,
-        )
-        self.session.add(user)
-        try:
-            await self.session.flush()
-            membership = await self._new_tenant_records(req.showroom_name, req.slug, user)
-            await self.session.commit()
-        except IntegrityError as e:
-            await self._duplicate_tenant(e)
-        return issue_tokens(user, membership)
-
-    async def create_showroom(self, user: PlatformUser, req: CreateShowroomRequest) -> TokenPairResponse:
-        try:
-            membership = await self._new_tenant_records(req.showroom_name, req.slug, user)
-            await self.session.commit()
-        except IntegrityError as e:
-            await self._duplicate_tenant(e)
-        return issue_tokens(user, membership)
-
-    async def _duplicate_tenant(self, error: IntegrityError) -> NoReturn:
-        # A repeated or concurrent request: the unique slug/email keeps only one showroom.
-        await self.session.rollback()
-        constraint = getattr(error.orig, "constraint_name", "unknown")
-        logger.info(f"Showroom registration conflict on {constraint}")
-        raise ConflictException("SHOWROOM_ALREADY_EXISTS", "This showroom or account is already registered.")
-
     # ---------- sessions ----------
 
     async def login(self, email: str, password: str) -> TokenPairResponse:
@@ -208,6 +124,9 @@ class ControlPlaneService:
         if not user or not user.password_hash or not valid or user.account_status != AccountStatus.ACTIVE.value:
             raise UnauthorizedException("Invalid email or password.")
         if is_refused_dev_credential(user.email, password):
+            raise UnauthorizedException("Invalid email or password.")
+        # Someone deactivated everywhere can't sign in at all, so a password alone gets them nothing.
+        if not await account_has_access(self.session, user.id):
             raise UnauthorizedException("Invalid email or password.")
         memberships = await self.active_memberships(user.id)
         # One showroom: select it. Several: the user must choose.
@@ -222,7 +141,7 @@ class ControlPlaneService:
         except ValueError:
             raise UnauthorizedException("Invalid token.")
         user = await self.session.get(PlatformUser, user_id)
-        if not user or user.account_status != AccountStatus.ACTIVE.value:
+        if not user or user.account_status != AccountStatus.ACTIVE.value or not await account_has_access(self.session, user.id):
             raise UnauthorizedException("Account is not active.")
         membership = None
         if payload.get("tid"):
@@ -304,6 +223,8 @@ class ControlPlaneService:
             raise invalid
         if membership.tenant.status == TenantStatus.CANCELLED.value:
             raise invalid
+        if membership.tenant.status == TenantStatus.SUSPENDED.value:
+            raise AppException("TENANT_SUSPENDED", "This showroom is suspended.", status.HTTP_403_FORBIDDEN)
 
         user = membership.user
         if user.account_status == AccountStatus.INVITED.value:
@@ -322,6 +243,15 @@ class ControlPlaneService:
         membership.status = MembershipStatus.ACTIVE.value
         membership.invitation_token_hash = None  # single use
         membership.invitation_expires_at = None
+        tenant = membership.tenant
+        if membership.role == TenantRole.OWNER.value and tenant.onboarding_stage in (OnboardingStage.CREATED.value, OnboardingStage.INVITED.value):
+            tenant.onboarding_stage = OnboardingStage.DATABASE_SETUP.value
+        self.session.add(
+            AuditEvent(
+                actor_type="SHOWROOM_ACCOUNT", actor_id=user.id, action="INVITATION_ACCEPTED", target_type="MEMBERSHIP",
+                target_id=str(membership.id), tenant_id=membership.tenant_id, after={"role": membership.role},
+            )
+        )
         await self.session.commit()
         return issue_tokens(user, membership)
 
@@ -354,13 +284,19 @@ class ControlPlaneService:
         if not [o for o in owners if o != membership_id]:
             raise ConflictException("LAST_OWNER", "A showroom must keep at least one active Owner.")
 
-    async def deactivate_member(self, tenant_id: uuid.UUID, membership_id: uuid.UUID) -> TenantMembership:
+    async def deactivate_member(self, tenant_id: uuid.UUID, membership_id: uuid.UUID, actor_id: uuid.UUID) -> TenantMembership:
         membership = await self._member(tenant_id, membership_id)
         if membership.role == TenantRole.OWNER.value and membership.status == MembershipStatus.ACTIVE.value:
             await self._ensure_other_active_owner(tenant_id, membership_id)
         membership.status = MembershipStatus.DEACTIVATED.value
         membership.invitation_token_hash = None
         membership.invitation_expires_at = None
+        self.session.add(
+            AuditEvent(
+                actor_type="SHOWROOM_ACCOUNT", actor_id=actor_id, action="MEMBER_DEACTIVATED", target_type="MEMBERSHIP",
+                target_id=str(membership_id), tenant_id=tenant_id, after={"role": membership.role},
+            )
+        )
         await self.session.commit()
         return await self._member(tenant_id, membership_id)
 
@@ -384,12 +320,24 @@ class ControlPlaneService:
     def setup_status(ctx: TenantContext) -> SetupStatusResponse:
         conn = ctx.connection
         conn_status = conn.connection_status if conn else ConnectionStatus.PENDING.value
+        required_version = latest_schema_version()
+        stored_version = conn.schema_version if conn else None
+        migration_required = bool(conn and conn.secret_reference and stored_version != required_version)
         next_step = None
         if ctx.tenant.status == TenantStatus.SUSPENDED.value:
             next_step = "CONTACT_SUPPORT"
+        elif conn_status == ConnectionStatus.PROVISIONING.value and ctx.tenant.onboarding_stage == OnboardingStage.COMPLETE.value:
+            next_step = "WAIT_FOR_MAINTENANCE"
         elif not ctx.operational:
             next_step = "CONNECT_DATABASE" if ctx.role == TenantRole.OWNER.value else "WAIT_FOR_OWNER"
+        elif migration_required:
+            next_step = "RUN_MIGRATION" if ctx.role == TenantRole.OWNER.value else "WAIT_FOR_OWNER"
         return SetupStatusResponse(
+            onboarding_stage=ctx.tenant.onboarding_stage,
+            suspended_at=ctx.tenant.suspended_at,
+            schema_version=stored_version,
+            required_schema_version=required_version,
+            migration_required=migration_required,
             tenant_id=ctx.tenant.id,
             showroom_name=ctx.tenant.showroom_name,
             tenant_status=ctx.tenant.status,
