@@ -25,8 +25,8 @@ class SalesDashboardMetrics(BaseModel):
     accepted_quotations: int
     rejected_quotations: int
     conversion_rate_percentage: Decimal
-    sales_by_variant: List[Dict[str, int]]
-    sales_by_executive: List[Dict[str, int]]
+    sales_by_variant: List[Dict[str, Any]]
+    sales_by_executive: List[Dict[str, Any]]
 
 
 class LeadsDashboardMetrics(BaseModel):
@@ -43,7 +43,7 @@ class InventoryDashboardMetrics(BaseModel):
     sold_units: int
     service_units: int
     in_transit_units: int
-    stock_by_brand: List[Dict[str, int]]
+    stock_by_brand: List[Dict[str, Any]]
 
 
 class RevenueDashboardMetrics(BaseModel):
