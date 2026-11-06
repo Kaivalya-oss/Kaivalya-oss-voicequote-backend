@@ -71,8 +71,10 @@ def test_dockerignore_excludes_sensitive_paths(pattern):
     assert pattern in read(BACKEND, ".dockerignore").splitlines()
 
 
-def test_shell_scripts_keep_lf_line_endings():
-    assert "*.sh text eol=lf" in read(REPO, ".gitattributes").splitlines()
+def test_text_files_keep_lf_line_endings():
+    rules = read(REPO, ".gitattributes").splitlines()
+    assert "* text=auto eol=lf" in rules
+    assert "*.sh text eol=lf" in rules
 
 
 def test_git_applies_lf_rule_even_with_autocrlf():

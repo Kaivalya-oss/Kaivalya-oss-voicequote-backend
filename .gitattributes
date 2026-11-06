@@ -1,4 +1,6 @@
-# These run inside Linux containers, so they must keep LF on every platform, including Windows checkouts.
+# Everything runs inside Linux containers. LF on every platform means a Windows and a Linux
+# checkout give identical files, and so identical images.
+* text=auto eol=lf
 *.sh text eol=lf
 Dockerfile text eol=lf
 .dockerignore text eol=lf
