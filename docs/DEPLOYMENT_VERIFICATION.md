@@ -77,6 +77,20 @@ Public showroom registration no longer exists. The Platform Admin creates the sh
 
 ## Results
 
+### Latest run: phase A follow-up, `5b0ba09`
+
+Image `voicequote-backend:5b0ba09`, ID `sha256:73c1d13957a83e008b5ff032cbfe372be71ca3996988e5593e9a87d1e5757ab6`. Test image ID `sha256:b5a83c28085ca166ca42157c482ac94eb8fa912d283d9a2aba79d27f1f471c6d`. Run on 2026-11-07 on a freshly created isolated stack. Later commits change documents only.
+
+| Run | Result |
+| --- | --- |
+| `verify_image.sh all`, full run | 245 passed, 0 failed |
+| Single-showroom tests in the test image | 121 passed, 21 skipped, 0 failed |
+| Multi-tenant tests in the test image | 249 passed, 0 failed |
+| Single-showroom tests from source at this commit | 140 passed, 2 skipped, 0 failed |
+| Multi-tenant tests from source at this commit | 249 passed, 0 failed |
+
+The results below this section are from earlier runs.
+
 ### Isolation
 
 | Check | Status |

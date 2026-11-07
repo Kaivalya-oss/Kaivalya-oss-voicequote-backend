@@ -7,7 +7,7 @@
 | Area | Today |
 | --- | --- |
 | Login attempts | No limit on either login endpoint |
-| Email ownership | Never checked. Registration accepts any address and, in multi-tenant mode, signs the user in immediately |
+| Email ownership | Multi-tenant Owners and staff join only by emailed invitation, because public showroom registration has been removed. Single-showroom registration still doesn't check it. Items below that mention multi-tenant registration no longer apply |
 | Password reset | Forgot and reset pages call Supabase, which no longer holds these accounts, so reset does not work in multi-tenant mode |
 | Token storage | Access and refresh tokens in `localStorage` (`src/lib/api.ts`), readable by any script on the page |
 | Session control | Stateless JWTs: 60-minute access, 7-day refresh. Refresh tokens are not rotated and cannot be revoked. Sign-out does not end the session on the server |
