@@ -29,6 +29,8 @@ Former roles map as: Admin and Dealer Owner to OWNER; Sales Executive to SALESPE
 
 ## API (`/api/v1/platform`)
 
+The two showroom-creation routes below were removed later. Showrooms are now created only by the Platform Admin: see `PLATFORM_ADMIN.md`.
+
 | Method and path | Purpose | Who |
 | --- | --- | --- |
 | `POST /showrooms/register` | Register owner and showroom | Public |

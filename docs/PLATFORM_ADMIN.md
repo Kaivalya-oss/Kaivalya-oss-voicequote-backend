@@ -1,6 +1,6 @@
 # Platform Admin
 
-VoiceQuote has exactly one Platform Admin, who manages platform metadata across all showrooms and has no access to any showroom's business data. This document covers what exists now: identity, sign-in and the boundary. Screens and showroom management come in later phases.
+VoiceQuote has exactly one Platform Admin account across the whole platform, who manages platform metadata across all showrooms and has no access to any showroom's business data. There is no second Platform Admin, no Admin A or Admin B, no two-admin approval and no two-person authorization. This document covers what exists now: identity, sign-in, the boundary, onboarding and suspension. Screens, plans and payments come in later phases.
 
 ## Boundary
 
@@ -90,6 +90,10 @@ docker run -d --network <network> --env-file <admin env> --entrypoint uvicorn <i
 | `ADMIN_MAX_FAILURES_PER_IP` | | `5` | |
 | `ADMIN_MAX_FAILURES_PER_ACCOUNT` | | `20` | |
 | `ADMIN_MAX_MFA_FAILURES` | | `5` | |
+| `ADMIN_SMTP_HOST`, `ADMIN_SMTP_FROM`, `ADMIN_OWNER_INVITE_URL` | To create showrooms | Empty | Without all three, creating a showroom returns 503 |
+| `ADMIN_SMTP_PORT`, `ADMIN_SMTP_STARTTLS` | | `587`, `true` | STARTTLS can't be disabled in production |
+| `ADMIN_SMTP_USER`, `ADMIN_SMTP_PASSWORD` | | Empty | Password is a secret, and separate from the showroom app's |
+| `ADMIN_INVITATION_EXPIRE_HOURS` | | `72` | |
 
 `ADMIN_BOOTSTRAP_DATABASE_URL`, `ADMIN_EMAIL`, `ADMIN_FULL_NAME` and `ADMIN_PASSWORD` are read only by the bootstrap script, and must not be set on the running process.
 
@@ -108,6 +112,10 @@ All paths start with `/api/v1/admin`. Only those marked as public work without a
 | `GET /auth/sessions` | Session | Active sessions, without token hashes |
 | `POST /auth/sessions/{id}/revoke` | Session | Ends one session |
 | `GET /me` | Session | Own profile |
+| `POST /showrooms` | Session | Create a showroom and invite its primary Owner |
+| `GET /showrooms/{id}` | Session | Showroom metadata, from an explicit allow-list |
+| `POST /showrooms/{id}/owner-invitation` | Session | Resend or replace, only before onboarding completes |
+| `POST /showrooms/{id}/suspend`, `/reactivate` | Session | With a required reason |
 
 `GET /health` on the process root reports only that it's running.
 
@@ -123,6 +131,46 @@ All paths start with `/api/v1/admin`. Only those marked as public work without a
 
 `audit_events` is append-only. Database triggers refuse update, delete and truncate for every role, including the table owner, and the admin role also has no privilege to attempt them. Only a migration can remove the triggers. Events never hold passwords, tokens, MFA secrets, recovery codes or database credentials.
 
+## Onboarding
+
+1. The Platform Admin enters the showroom's details and the primary Owner's contact details.
+2. The API creates the central records in one transaction, and emails a single-use invitation that expires after `ADMIN_INVITATION_EXPIRE_HOURS`.
+3. The Owner accepts and sets their own password. An existing account must sign in to accept, so a leaked link can't take it over.
+4. The Owner connects their PostgreSQL database, which is verified and migrated.
+5. The showroom becomes `ACTIVE` only after that succeeds.
+
+**The Platform Admin never sees the token.** It's in no API response, audit event or log, and the admin's database role can write its hash but never read it. If email isn't configured, the API returns 503 and creates nothing. If sending fails, the records stay and the invitation can be sent again.
+
+`onboarding_stage` moves through `CREATED`, `INVITED`, `DATABASE_SETUP` and `COMPLETE`, separately from the access `status`. There's no separate "complete setup" step yet: connecting a verified database completes onboarding. Plans aren't built yet either, so subscriptions start as `unassigned`, at 0.00.
+
+## Suspension
+
+Suspension takes effect on each showroom user's next request, because every request re-reads the status. It deletes nothing.
+
+| While suspended | Allowed |
+| --- | --- |
+| All business routes, for every role | No |
+| Inviting, role changes, deactivating, database changes | No, Owners included |
+| Viewing status | Yes. The reason isn't shown, because it's the Platform Admin's note |
+| An Owner disconnecting VoiceQuote from their database | Yes |
+
+**Disconnecting removes VoiceQuote's stored connection reference and credentials, and closes its connections. It doesn't change the password on the customer's database server,** and the response says so.
+
+Reactivation returns a showroom to `ACTIVE` only if onboarding is complete and its connection is still active. Otherwise it goes to `PENDING_SETUP`.
+
+## Owner recovery
+
+Once onboarding is complete, the API refuses to invite or replace an Owner, with `OWNER_RECOVERY_REQUIRED`. This stops an administrator from quietly placing an account they control into an active showroom.
+
+With one Platform Admin, there's nobody else to approve a recovery, so these controls take that place. **This procedure is designed and documented, but its workflow isn't built yet:** recovery is simply refused today.
+
+1. The Platform Admin initiates and authorizes the recovery.
+2. The showroom's identity is verified independently, against its previously registered business details.
+3. Existing Owners are notified where possible, and can object.
+4. A 72-hour delay applies where possible.
+5. If existing Owners can't be reached or can't approve, stronger business identity verification is required.
+6. The evidence, decision, notification and execution are all recorded in the audit log.
+
 ## Known limits
 
 | Limit | Detail |
@@ -130,5 +178,6 @@ All paths start with `/api/v1/admin`. Only those marked as public work without a
 | Lockout can be abused | Repeated failures from many addresses can temporarily lock out the only admin, by design of a shared account limit. Restricting the admin origin at the network level removes this |
 | Enrolment window | Between bootstrap and first sign-in, the password alone can start MFA enrolment |
 | Lost MFA with no codes | The server-side recovery procedure arrives with Settings |
+| Single point of control | With one admin, no second person checks their actions. The audit trail and Owner notifications are the compensating controls |
 | Password change | Arrives with Settings. The admin role can't change the password yet |
 | Rotating `ADMIN_JWT_SECRET_KEY` | Signs the admin out, which is harmless. Rotating `ADMIN_MFA_ENCRYPTION_KEY` isn't supported yet |

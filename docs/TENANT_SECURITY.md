@@ -30,8 +30,8 @@ These are not solved by the current code, and should be addressed before commerc
 
 1. **Secrets manager:** no production manager is connected yet.
 2. **Tokens in `localStorage`:** an XSS bug could steal them. httpOnly cookies would be safer. Refresh tokens are not revoked on logout and last 7 days.
-3. **No rate limiting** on login, registration or invitation acceptance, and no email verification, so registering with someone else's email is possible.
-4. **Account disclosure:** registration reveals whether an email already has an account.
+3. **No rate limiting** on showroom sign-in or invitation acceptance. The Platform Admin's sign-in has its own limits.
+4. **Password reset** doesn't work yet in multi-tenant mode, because its pages still use the legacy Supabase project.
 5. **Application access:** VoiceQuote's application can read showroom data while connected. Ownership is contractual and architectural, and it does not stop an operator with production access.
 6. **Application logs:** request logs record paths, which contain record IDs but no customer details. Only the quotation, email and WhatsApp paths were reviewed for customer data, not every log line in the application.
 7. **Other shared services:** Gmail, WhatsApp and Gemini use global credentials, and customer data passes through them when used.

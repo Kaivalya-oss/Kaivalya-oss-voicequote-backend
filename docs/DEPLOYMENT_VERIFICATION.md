@@ -49,7 +49,7 @@ docker run --rm --network <network> --env-file <env file> --entrypoint alembic v
 - **New showroom:** the Owner connects the database in the setup screen (`POST /api/v1/platform/tenants/current/database/connect`). It is migrated and verified as part of connecting.
 - **Existing showroom:** the Owner presses **Run migrations** (`POST /api/v1/platform/tenants/current/database/migrate`). Each is separate and recorded in `tenant_migration_runs`.
 
-**There is no operator command to migrate all showrooms.** See Defects.
+An operator can migrate one showroom or all that need it with `scripts/migrate_showrooms.py`. See `SHOWROOM_MIGRATIONS.md`.
 
 ## Creating the first account
 
@@ -71,9 +71,9 @@ The admin file holds `ADMIN_EMAIL`, `ADMIN_FULL_NAME` and `ADMIN_PASSWORD`. Or l
 
 This account is an `ADMIN`, not a `DEALER_OWNER`. An administrator assigns other roles with `PUT /api/v1/users/{id}/role`, after the person registers and is approved.
 
-### Multi-tenant: the Owner registers
+### Multi-tenant: invitation only
 
-The Owner registers at `POST /api/v1/platform/showrooms/register` with their own password, which creates the showroom and their `OWNER` membership. Staff join by invitation. **PARTIAL:** nothing verifies email ownership yet, so someone can register with an address they don't own. See `AUTH_HARDENING_PLAN.md`.
+Public showroom registration no longer exists. The Platform Admin creates the showroom and enters the primary Owner's details, and the Owner receives a single-use, expiring invitation by email and sets their own password. See `PLATFORM_ADMIN.md`.
 
 ## Results
 
@@ -155,8 +155,6 @@ A query already running when a server hangs can still wait for the 30 s command 
 
 | Defect | Severity | Detail |
 | --- | --- | --- |
-| No way to migrate all showrooms | **High** | Only each Owner can migrate their own showroom. A release with a schema change depends on every Owner acting |
-| Older showroom gives a generic 500 | **High** | Until migrated, staff get `INTERNAL_SERVER_ERROR` on requests such as the customer list (`column users.central_user_id does not exist`). No details leak, and health reports `TENANT_DB_VERIFICATION_FAILED`, but staff get no useful message |
 | `X-Forwarded-For` trusted | Medium | Audit log IPs can be forged. Also blocks reliable rate limiting |
 | `JWT_SECRET_KEY` check only for exact `production` | Medium | `APP_ENV=prod` or `staging` with no secret falls back to the published development secret |
 | First hung request takes 7 s, not 5 s | Low | About 2 s beyond the connect timeout. Cause not investigated |
@@ -165,7 +163,6 @@ A query already running when a server hangs can still wait for the 30 s command 
 
 | Blocker | Status |
 | --- | --- |
-| Migrating all showrooms; clear error for an older schema | BLOCKED, code change |
 | Login rate limiting, email verification, password reset, safer tokens (`AUTH_HARDENING_PLAN.md`) | BLOCKED, code change |
 | Secrets manager adapter and account | BLOCKED, external |
 | HTTPS and reverse proxy, including client IP handling | BLOCKED, external |
