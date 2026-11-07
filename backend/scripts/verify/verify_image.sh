@@ -108,6 +108,10 @@ phase_safety() {
 
     docker run --rm --network $NET $(envs vqs_empty) -e SEED_DEV_DATA=true --entrypoint python "$IMAGE" -c "import app.core.config" >/dev/null 2>&1
     check "SEED_DEV_DATA=true refused in production" "$?" 1
+    for env in staging prod; do
+        docker run --rm --network none -e APP_ENV=$env --entrypoint python "$IMAGE" -c "import app.core.config" >/dev/null 2>&1
+        check "APP_ENV=$env refused without JWT_SECRET_KEY" "$?" 1
+    done
     docker run --rm --network $NET $(envs vqs_empty) -e SEED_DEV_DATA=true "$IMAGE" >/dev/null 2>&1
     check "server refuses to start with SEED_DEV_DATA=true" "$([ $? != 0 ] && echo yes)" yes
     docker run --rm --network $NET $(envs vqs_empty) --entrypoint test "$IMAGE" -e scripts/seed.py
@@ -332,7 +336,7 @@ phase_showroommigration() {
     check "new showroom A migrated on connect" "$(showroom_version a)" $head
     check "new showroom B migrated on connect" "$(showroom_version b)" $head
     # Connection failures in this phase would leave the showroom "older" for the wrong reason.
-    docker run --rm --network $NET -e APP_ENV=staging -e DATABASE_URL="$(showroom_url a)" --entrypoint alembic "$IMAGE" downgrade $old >/dev/null 2>&1
+    docker run --rm --network $NET -e APP_ENV=staging -e JWT_SECRET_KEY=$JWT -e DATABASE_URL="$(showroom_url a)" --entrypoint alembic "$IMAGE" downgrade $old >/dev/null 2>&1
     check "showroom A put back on the older schema" "$(showroom_version a)" $old
     check "showroom B not affected" "$(showroom_version b)" $head
     docker restart vqv-mt >/dev/null; wait_healthy vqv-mt
@@ -353,7 +357,7 @@ phase_showroommigration() {
     check "showroom B version still unchanged" "$(showroom_version b)" $head
 
     echo "--- the server-side command"
-    docker run --rm --network $NET -e APP_ENV=staging -e DATABASE_URL="$(showroom_url b)" --entrypoint alembic "$IMAGE" downgrade $old >/dev/null 2>&1
+    docker run --rm --network $NET -e APP_ENV=staging -e JWT_SECRET_KEY=$JWT -e DATABASE_URL="$(showroom_url b)" --entrypoint alembic "$IMAGE" downgrade $old >/dev/null 2>&1
     vm health -e WHICH=b -e HEALTHY=false -e CODE=TENANT_DB_SCHEMA_OUTDATED >/dev/null 2>&1
     out="$(docker exec vqv-mt python scripts/migrate_showrooms.py --plan 2>&1 | tr -d '\r')"
     check "plan names the showroom that needs migrating" "$(echo "$out" | grep -c 'REQUIRED')" 1
@@ -567,7 +571,7 @@ phase_platformadmin() {
 
     out="$(docker run --rm --network $NET $main_env --entrypoint alembic "$IMAGE" -c alembic_control.ini upgrade head 2>&1)"
     check "explicit control-plane migration" "$?" 0
-    check "all control-plane revisions applied" "$(echo "$out" | grep -c 'Running upgrade')" 3
+    check "all control-plane revisions applied" "$(echo "$out" | grep -c 'Running upgrade')" 4
     check "schema at the latest revision" "$(sql $control 'select version_num from control_plane_alembic_version')" c3a1_showroom_sessions
     check "migration created no admin account" "$(sql $control 'select count(*) from platform_admins')" 0
     check "group role can't log in" "$(sql $control "select rolcanlogin from pg_roles where rolname='voicequote_platform_admin'")" f
