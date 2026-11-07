@@ -1,7 +1,8 @@
 """A throwaway mail server for the isolated test network. Accepts everything, sends nothing onward.
 
-SMTP on 2525. GET /message?to=<address> on 8025 returns the newest message for that address.
+SMTP on 2525. GET /message?to=<address> on 8025 returns the newest message's decoded body, as a mail client would show it.
 """
+import email
 import socketserver
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -36,7 +37,8 @@ class Smtp(socketserver.StreamRequestHandler):
                     if data.strip() == ".":
                         break
                     body.append(data)
-                messages[recipient] = "".join(body)
+                parsed = email.message_from_string("".join(body))
+                messages[recipient] = parsed.get_payload(decode=True).decode()
                 self.reply("250 stored")
             elif upper == "QUIT":
                 self.reply("221 bye")

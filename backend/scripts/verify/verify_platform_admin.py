@@ -94,8 +94,8 @@ check("profile holds no secrets", not re.search("password|mfa_secret|hash", me.t
 owner_email = f"owner-{int(time.time())}@example.com"
 created = c.post(f"{A}/showrooms", headers=H(access), json={"showroom_name": f"Boundary {int(time.time())}", "legal_business_name": "Boundary Pvt Ltd", "owner_email": owner_email, "owner_full_name": "Boundary Owner"})
 check("admin creates a showroom", created.status_code == 201 and created.json()["data"]["invitation_delivery"] == "SENT", created.text)
-mail = c.get(f"{os.environ['SINK_BASE']}/message", params={"to": owner_email}).text.replace("=\n", "")
-invite_token = re.search(r"#token=([\w=\-]+)", mail)[1]
+mail = c.get(f"{os.environ['SINK_BASE']}/message", params={"to": owner_email}).text
+invite_token = re.search(r"#token=([\w\-]+)", mail)[1]
 check("invitation token isn't in the admin's response", invite_token not in created.text)
 owner = c.post(f"{SHOWROOM}/api/v1/platform/invitations/accept", json={"token": invite_token, "full_name": "Boundary Owner", "password": "Boundary-Owner-Pass-1"})
 check("Owner accepts the invitation", owner.status_code == 200, owner.text)

@@ -67,7 +67,7 @@ def onboard(tag, admin_token):
         "showroom_name": f"Verify {tag} {uuid.uuid4().hex[:6]}", "legal_business_name": f"Verify {tag} Pvt Ltd", "owner_email": email, "owner_full_name": f"Owner {tag}"})
     check(f"Platform Admin creates showroom {tag}", r.status_code == 201 and r.json()["data"]["invitation_delivery"] == "SENT", r.text)
     mail = c.get(f"{os.environ['SINK_BASE']}/message", params={"to": email})
-    token = re.search(r"#token=([\w=\-]+)", mail.text.replace("=\n", ""))[1]
+    token = re.search(r"#token=([\w\-]+)", mail.text)[1]
     check(f"invitation token isn't in the admin response {tag}", token not in r.text)
     accepted = c.post(f"{P}/invitations/accept", json={"token": token, "full_name": f"Owner {tag}", "password": "VerifyOwner123!"})
     check(f"Owner accepts invitation {tag}", accepted.status_code == 200, accepted.text)

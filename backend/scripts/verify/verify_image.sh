@@ -256,12 +256,14 @@ print(httpx.post('http://vqv-mt:8000/api/v1/platform/auth/login',json={'email':'
     mt_prepare_servers
     start_sink
     start_admin_for vqv_control
-    vm setup >/tmp/vq_mt_setup.txt 2>&1; true
+    vm setup >/tmp/vq_mt_setup.txt 2>&1
+    check "black-box setup ran to the end" "$?" 0
     MT_STATE="$(grep -E '^\{' /tmp/vq_mt_setup.txt | tail -1)"
     grep -E '^FAIL|checks passed' /tmp/vq_mt_setup.txt
     check "black-box setup" "$(grep -c '^FAIL' /tmp/vq_mt_setup.txt)" 0
     echo "$MT_STATE" > /tmp/vq_mt_state.json
-    vm access > /tmp/vq_mt_access.txt 2>&1; true
+    vm access > /tmp/vq_mt_access.txt 2>&1
+    check "black-box access rules ran to the end" "$?" 0
     grep -E '^FAIL|checks passed' /tmp/vq_mt_access.txt
     check "black-box access rules" "$(grep -c '^FAIL' /tmp/vq_mt_access.txt)" 0
     check "suspension and reactivation audited" "$(sql vqv_control "select count(*) from audit_events where action in ('SHOWROOM_SUSPENDED','SHOWROOM_REACTIVATED') and reason is not null")" 2
