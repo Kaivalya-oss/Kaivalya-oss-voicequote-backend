@@ -313,7 +313,7 @@ Authorization: Bearer <access_token>
 ### 6. Finance & Exact EMI Calculator (`/finance`)
 
 #### `POST /finance/calculate-emi`
-- **Auth:** None (Public / Authenticated)
+- **Auth:** Any signed-in staff member. Multi-tenant: a member of the selected showroom
 - **Request Body:**
   ```json
   {

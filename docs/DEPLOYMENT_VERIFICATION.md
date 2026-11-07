@@ -169,8 +169,6 @@ A query already running when a server hangs can still wait for the 30 s command 
 
 | Defect | Severity | Detail |
 | --- | --- | --- |
-| `X-Forwarded-For` trusted | Medium | Audit log IPs can be forged. Also blocks reliable rate limiting |
-| `JWT_SECRET_KEY` check only for exact `production` | Medium | `APP_ENV=prod` or `staging` with no secret falls back to the published development secret |
 | First hung request takes 7 s, not 5 s | Low | About 2 s beyond the connect timeout. Cause not investigated |
 
 ## Deployment blockers
@@ -179,7 +177,7 @@ A query already running when a server hangs can still wait for the 30 s command 
 | --- | --- |
 | Login rate limiting, email verification, password reset, safer tokens (`AUTH_HARDENING_PLAN.md`) | BLOCKED, code change |
 | Secrets manager adapter and account | BLOCKED, external |
-| HTTPS and reverse proxy, including client IP handling | BLOCKED, external |
+| HTTPS and reverse proxy. Set `TRUSTED_PROXY_IPS` to its address | BLOCKED, external |
 | Static outbound IP | BLOCKED, external |
 | Production host, central database and its backups, monitoring, log shipping | BLOCKED, not configured |
 | Per-showroom Gmail and WhatsApp | BLOCKED, later phase |

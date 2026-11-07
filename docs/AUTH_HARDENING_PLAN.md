@@ -10,7 +10,7 @@
 | Email ownership | Multi-tenant Owners and staff join only by emailed invitation, because public showroom registration has been removed. Single-showroom registration still doesn't check it. Items below that mention multi-tenant registration no longer apply |
 | Password reset | Forgot and reset pages call Supabase, which no longer holds these accounts, so reset does not work in multi-tenant mode |
 | Token storage | Access and refresh tokens in `localStorage` (`src/lib/api.ts`), readable by any script on the page |
-| Session control | Stateless JWTs: 60-minute access, 7-day refresh. Refresh tokens are not rotated and cannot be revoked. Sign-out does not end the session on the server |
+| Session control | Multi-tenant: done. Each sign-in is a row in `showroom_sessions`, refresh tokens rotate, reuse ends the session, and `POST /api/v1/platform/auth/logout` revokes it. Every request checks it. The frontend still needs to call that route. Single-showroom: still stateless and not revocable |
 
 ## Order of work
 
@@ -18,11 +18,11 @@ Sessions come first, because the other three all need somewhere to record state 
 
 ### Phase A: server-side sessions and safer token storage
 
-1. Add a central `auth_sessions` table: id, user id, hash of the refresh token, family id, created, last used, expiry, revoked at, user agent. Only hashes are stored.
-2. Rotate refresh tokens on every use. Reuse of an old token revokes the whole family and is logged as a possible theft.
+1. Done as `showroom_sessions`, without user agent: id, user id, hash of the current refresh token's ID, created, last refreshed, expiry, revoked at and reason.
+2. Done: refresh tokens rotate on every use, and reusing an old one revokes the session and is audited as `SESSION_REFRESH_REUSED`.
 3. Move the refresh token to a cookie that is `HttpOnly`, `Secure`, `SameSite=Lax` and scoped to `/api/v1/platform/auth`. Keep the access token in memory only, and shorten it to about 15 minutes.
 4. Add CSRF protection to cookie-authenticated endpoints: a double-submit token, plus an `Origin` check against an explicit allow-list.
-5. Make sign-out revoke the session on the server. Add "sign out everywhere", and revoke all sessions on password change.
+5. Sign-out revokes the session on the server: done in the API, not yet called by the frontend. Still to do: "sign out everywhere", and revoking all sessions on password change.
 6. Add a Content-Security-Policy, since an access token in memory is still reachable by injected script.
 
 **Decision needed:** frontend and API must share a site for `SameSite` cookies, so the production domain layout must be known first (for example `app.` and `api.` under one domain).

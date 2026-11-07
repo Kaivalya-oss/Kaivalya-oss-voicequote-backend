@@ -29,7 +29,7 @@ Other people's records answer 404 rather than 403, so they cannot be probed. Sel
 These are not solved by the current code, and should be addressed before commercial launch:
 
 1. **Secrets manager:** no production manager is connected yet.
-2. **Tokens in `localStorage`:** an XSS bug could steal them. httpOnly cookies would be safer. Refresh tokens are not revoked on logout and last 7 days.
+2. **Tokens in `localStorage`:** an XSS bug could steal them. httpOnly cookies would be safer. In multi-tenant mode, `POST /api/v1/platform/auth/logout` ends the session on the server, refresh tokens rotate, and reusing an old one ends the session. The frontend doesn't call that route yet. In single-showroom mode, logout still doesn't revoke anything.
 3. **No rate limiting** on showroom sign-in or invitation acceptance. The Platform Admin's sign-in has its own limits.
 4. **Password reset** doesn't work yet in multi-tenant mode, because its pages still use the legacy Supabase project.
 5. **Application access:** VoiceQuote's application can read showroom data while connected. Ownership is contractual and architectural, and it does not stop an operator with production access.

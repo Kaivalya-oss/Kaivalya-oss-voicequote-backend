@@ -12,7 +12,8 @@ The source of truth is `backend/app/core/config.py`. No value here is a producti
 | `DATABASE_URL` | local dev URL | Yes, single-showroom | Yes | asyncpg URL. Migrated only by an explicit command |
 | `TEST_DATABASE_URL` | local dev URL | Tests only | Yes | Must differ from `DATABASE_URL`, or tests refuse to run |
 | `SEED_DEV_DATA` | `false` | Local work only | | With `APP_ENV` of `development` or `test`, lets `scripts/seed.py` create the published accounts. The app refuses to start if it is set anywhere else |
-| `JWT_SECRET_KEY` | empty | Yes in production | Yes | 32+ characters and not a published value, or the app refuses to start |
+| `JWT_SECRET_KEY` | empty | Yes, unless `APP_ENV` is `development` or `test` | Yes | 32+ characters and not a published value, or the app refuses to start. Staging, `prod` and unrecognised names count as production. Only development and test fall back to a published secret |
+| `TRUSTED_PROXY_IPS` | empty | Behind a reverse proxy | | Comma-separated proxy addresses. `X-Forwarded-For` is used only when the connecting address is listed, and the nearest unlisted hop is recorded. Empty records the connecting address |
 | `JWT_ALGORITHM` | `HS256` | | | |
 | `JWT_ACCESS_TOKEN_EXPIRE_MINUTES`, `JWT_REFRESH_TOKEN_EXPIRE_DAYS` | `60`, `7` | | | |
 | `FRONTEND_URL` | localhost origins | Yes | | CORS allow-list, comma separated |

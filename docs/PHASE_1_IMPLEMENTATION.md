@@ -36,6 +36,7 @@ The two showroom-creation routes below were removed later. Showrooms are now cre
 | `POST /showrooms/register` | Register owner and showroom | Public |
 | `POST /showrooms` | Add a showroom to an existing account | Signed in |
 | `POST /auth/login`, `POST /auth/refresh` | Sessions | Public |
+| `POST /auth/logout` | Ends this sign-in on the server. Added later | Signed in |
 | `GET /me`, `GET /memberships` | Current user and showrooms | Signed in |
 | `POST /tenants/select` | Switch showroom; returns a new token | Signed in, must be a member |
 | `GET /tenants/current` | Current showroom | Member |
