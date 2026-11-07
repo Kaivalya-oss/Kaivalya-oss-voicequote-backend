@@ -22,7 +22,7 @@ from app.schemas.common import ErrorDetail, ErrorResponse
 
 logger = logging.getLogger("voicequote.platform_admin")
 
-EXPECTED_SCHEMA_VERSION = "c2a1_showroom_onboarding"
+EXPECTED_SCHEMA_VERSION = "c3a1_showroom_sessions"
 
 
 class AdminStartupRefused(RuntimeError):

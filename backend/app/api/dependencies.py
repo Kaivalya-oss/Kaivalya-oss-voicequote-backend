@@ -15,11 +15,16 @@ security_bearer = HTTPBearer(auto_error=False)
 
 
 async def get_client_ip(request: Request) -> str:
-    """Extract client IP from headers or fallback to direct client host."""
-    forwarded_for = request.headers.get("x-forwarded-for")
-    if forwarded_for:
-        return forwarded_for.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    """The connecting address. X-Forwarded-For counts only when that address is a configured proxy."""
+    peer = request.client.host if request.client else None
+    trusted = settings.trusted_proxies
+    if peer and peer in trusted:
+        # Each proxy appends the address it saw, so the nearest untrusted hop is the client.
+        hops = [h.strip() for h in request.headers.get("x-forwarded-for", "").split(",") if h.strip()]
+        for hop in reversed(hops):
+            if hop not in trusted:
+                return hop[:64]
+    return peer[:64] if peer else "unknown"
 
 
 async def get_current_user(

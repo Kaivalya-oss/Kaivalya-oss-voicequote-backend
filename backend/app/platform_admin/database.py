@@ -56,6 +56,7 @@ FORBIDDEN_PRIVILEGE_CHECKS = {
     "delete audit events": "SELECT has_table_privilege('audit_events', 'DELETE')",
     "delete payments or showrooms": "SELECT has_table_privilege('tenants', 'DELETE')",
     "create tables": "SELECT has_schema_privilege('public', 'CREATE')",
+    "read or end showroom sign-in sessions": "SELECT has_table_privilege('showroom_sessions', 'SELECT') OR has_table_privilege('showroom_sessions', 'UPDATE')",
 }
 
 

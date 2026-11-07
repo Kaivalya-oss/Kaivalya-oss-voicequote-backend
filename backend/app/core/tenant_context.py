@@ -21,6 +21,7 @@ from app.control_plane.models import (
     MembershipStatus,
     OnboardingStage,
     PlatformUser,
+    ShowroomSession,
     Tenant,
     TenantConnection,
     TenantMembership,
@@ -64,11 +65,29 @@ def decode_platform_token(auth: Optional[HTTPAuthorizationCredentials]) -> Dict[
     return payload
 
 
+async def active_session(session: AsyncSession, payload: Dict[str, Any], user_id: uuid.UUID) -> ShowroomSession:
+    """The sign-in a token belongs to. Signing out revokes it, so its tokens stop working at once."""
+    try:
+        session_id = uuid.UUID(str(payload.get("sid")))
+    except ValueError:
+        raise UnauthorizedException("Invalid token.")
+    row = await session.get(ShowroomSession, session_id, populate_existing=True)
+    if (
+        row is None
+        or row.user_id != user_id
+        or row.revoked_at is not None
+        or row.expires_at <= datetime.now(timezone.utc)
+    ):
+        raise UnauthorizedException("This session has ended. Sign in again.")
+    return row
+
+
 async def load_active_user(session: AsyncSession, payload: Dict[str, Any]) -> PlatformUser:
     try:
         user_id = uuid.UUID(str(payload.get("sub")))
     except ValueError:
         raise UnauthorizedException("Invalid token.")
+    await active_session(session, payload, user_id)
     user = await session.get(PlatformUser, user_id)
     if not user or user.account_status != AccountStatus.ACTIVE.value or not await account_has_access(session, user.id):
         raise UnauthorizedException("Account is not active.")

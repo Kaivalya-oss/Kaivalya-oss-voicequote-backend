@@ -37,10 +37,11 @@ def test_emi_service_unit_calculations():
 
 
 @pytest.mark.asyncio
-async def test_emi_api_endpoint(client: AsyncClient):
+async def test_emi_api_endpoint(client: AsyncClient, sales_token: str):
     # Valid call
     res = await client.post(
         "/api/v1/finance/calculate-emi",
+        headers={"Authorization": f"Bearer {sales_token}"},
         json={
             "principal": 100000.00,
             "annual_interest_rate": 10.50,
@@ -56,10 +57,11 @@ async def test_emi_api_endpoint(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_emi_api_invalid_inputs(client: AsyncClient):
+async def test_emi_api_invalid_inputs(client: AsyncClient, sales_token: str):
     # Invalid zero principal
     res_zero_p = await client.post(
         "/api/v1/finance/calculate-emi",
+        headers={"Authorization": f"Bearer {sales_token}"},
         json={"principal": 0, "annual_interest_rate": 10.0, "tenure_months": 12},
     )
     assert res_zero_p.status_code == 422
@@ -67,6 +69,7 @@ async def test_emi_api_invalid_inputs(client: AsyncClient):
     # Negative interest rate
     res_neg_r = await client.post(
         "/api/v1/finance/calculate-emi",
+        headers={"Authorization": f"Bearer {sales_token}"},
         json={"principal": 50000, "annual_interest_rate": -5.0, "tenure_months": 12},
     )
     assert res_neg_r.status_code == 422
@@ -74,6 +77,7 @@ async def test_emi_api_invalid_inputs(client: AsyncClient):
     # Zero tenure
     res_zero_t = await client.post(
         "/api/v1/finance/calculate-emi",
+        headers={"Authorization": f"Bearer {sales_token}"},
         json={"principal": 50000, "annual_interest_rate": 10.0, "tenure_months": 0},
     )
     assert res_zero_t.status_code == 422

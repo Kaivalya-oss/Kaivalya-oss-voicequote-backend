@@ -8,7 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # The only environments that may use the published development accounts. See app/core/dev_accounts.py.
 DEV_ENVIRONMENTS = frozenset({"development", "test"})
 
-# Used only outside production when JWT_SECRET_KEY is not configured.
+# Used only in development and tests when JWT_SECRET_KEY is not configured.
 DEV_FALLBACK_JWT_SECRET = "dev-only-insecure-jwt-secret-do-not-use-in-production"
 
 # Values that have been published (committed to the repository or shipped as examples)
@@ -39,12 +39,16 @@ class Settings(BaseSettings):
     TEST_DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/dealership_test_db"
 
     # Security & JWT
-    # Required in production (APP_ENV=production): set JWT_SECRET_KEY via the environment / .env.
-    # Outside production an insecure development fallback is used when it is left empty.
+    # Required in every environment except development and test, including staging and any unrecognised name.
+    # Only development and test fall back to an insecure published secret when it is left empty.
     JWT_SECRET_KEY: str = ""
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+
+    # Comma separated addresses of the reverse proxies in front of this app. Empty means
+    # X-Forwarded-For is never trusted and the connecting address is recorded.
+    TRUSTED_PROXY_IPS: str = ""
 
     # CORS
     FRONTEND_URL: Union[str, List[str]] = ["http://localhost:3000", "http://localhost:5173"]
@@ -111,13 +115,18 @@ class Settings(BaseSettings):
     # Lets scripts/seed.py create the development accounts and sample data. Development and tests only.
     SEED_DEV_DATA: bool = False
 
+    @property
+    def trusted_proxies(self) -> List[str]:
+        return [ip.strip() for ip in self.TRUSTED_PROXY_IPS.split(",") if ip.strip()]
+
     @model_validator(mode="after")
     def enforce_jwt_secret(self) -> "Settings":
         secret = self.JWT_SECRET_KEY.strip()
-        if self.APP_ENV.lower() == "production":
+        # An allow-list, so APP_ENV=prod, staging or a typo is treated like production.
+        if self.APP_ENV.strip().lower() not in DEV_ENVIRONMENTS:
             if len(secret) < 32 or secret in INSECURE_JWT_SECRETS:
                 raise ValueError(
-                    "JWT_SECRET_KEY must be set to a strong secret (32+ characters) when APP_ENV=production."
+                    "JWT_SECRET_KEY must be set to a strong secret (32+ characters) unless APP_ENV is development or test."
                 )
         elif not secret:
             self.JWT_SECRET_KEY = DEV_FALLBACK_JWT_SECRET

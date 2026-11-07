@@ -34,7 +34,7 @@ from app.core.tenant_context import (
     require_tenant_roles,
 )
 from app.database.control_plane import get_control_db
-from app.schemas.common import SuccessResponse
+from app.schemas.common import MessageResponse, SuccessResponse
 
 router = APIRouter(prefix="/platform", tags=["Platform"])
 
@@ -49,6 +49,13 @@ async def login(req: PlatformLoginRequest, session: AsyncSession = Depends(get_c
 @router.post("/auth/refresh", response_model=SuccessResponse[TokenPairResponse])
 async def refresh(req: RefreshRequest, session: AsyncSession = Depends(get_control_db)):
     return SuccessResponse(data=await ControlPlaneService(session).refresh(req.refresh_token))
+
+
+@router.post("/auth/logout", response_model=MessageResponse)
+async def logout(payload: dict = Depends(get_token_payload), session: AsyncSession = Depends(get_control_db)):
+    """Ends this sign-in on the server. Its access and refresh tokens stop working immediately."""
+    await ControlPlaneService(session).logout(payload)
+    return MessageResponse(success=True, message="Signed out.")
 
 
 @router.get("/me", response_model=SuccessResponse[MeResponse])
@@ -81,10 +88,11 @@ async def memberships(user: PlatformUser = Depends(get_platform_user), session: 
 async def select_tenant(
     req: SelectTenantRequest,
     user: PlatformUser = Depends(get_platform_user),
+    payload: dict = Depends(get_token_payload),
     session: AsyncSession = Depends(get_control_db),
 ):
     """Switch showroom: verifies membership, then issues a token bound to that showroom."""
-    return SuccessResponse(data=await ControlPlaneService(session).select_tenant(user, req.tenant_id))
+    return SuccessResponse(data=await ControlPlaneService(session).select_tenant(user, req.tenant_id, payload))
 
 
 @router.get("/tenants/current", response_model=SuccessResponse[TenantResponse])

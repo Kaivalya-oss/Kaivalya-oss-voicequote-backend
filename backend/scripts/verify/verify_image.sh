@@ -239,10 +239,11 @@ phase_multitenant() {
     check "startup created no control tables" "$(sql vqv_control "select count(*) from information_schema.tables where table_schema='public'")" 0
     out="$(docker run --rm --network $NET $(mt_env) --entrypoint alembic "$IMAGE" -c alembic_control.ini upgrade head 2>&1)"
     check "explicit control-plane migration" "$?" 0
-    check "control-plane migration logs its progress" "$(echo "$out" | grep -c 'Running upgrade')" 3
+    check "control-plane migration logs its progress" "$(echo "$out" | grep -c 'Running upgrade')" 4
     check "  initial revision logged" "$(echo "$out" | grep -c 'Running upgrade  -> c0a1_initial')" 1
     check "  Platform Admin revision logged" "$(echo "$out" | grep -c 'Running upgrade c0a1_initial -> c1a1_platform_admin')" 1
     check "  onboarding revision logged" "$(echo "$out" | grep -c 'Running upgrade c1a1_platform_admin -> c2a1_showroom_onboarding')" 1
+    check "  sessions revision logged" "$(echo "$out" | grep -c 'Running upgrade c2a1_showroom_onboarding -> c3a1_showroom_sessions')" 1
     check "no business tables in the central database" "$(sql vqv_control "select count(*) from information_schema.tables where table_schema='public' and table_name in ('customers','quotations','quotation_items','leads','vehicle_variants','inventory_units')")" 0
     docker run -d --name vqv-mt --network $NET -v "$CERT_DIR":/certs:ro $(mt_env) "$IMAGE" >/dev/null
     wait_healthy vqv-mt; check "healthy" "$?" 0
@@ -567,7 +568,7 @@ phase_platformadmin() {
     out="$(docker run --rm --network $NET $main_env --entrypoint alembic "$IMAGE" -c alembic_control.ini upgrade head 2>&1)"
     check "explicit control-plane migration" "$?" 0
     check "all control-plane revisions applied" "$(echo "$out" | grep -c 'Running upgrade')" 3
-    check "schema at the onboarding revision" "$(sql $control 'select version_num from control_plane_alembic_version')" c2a1_showroom_onboarding
+    check "schema at the latest revision" "$(sql $control 'select version_num from control_plane_alembic_version')" c3a1_showroom_sessions
     check "migration created no admin account" "$(sql $control 'select count(*) from platform_admins')" 0
     check "group role can't log in" "$(sql $control "select rolcanlogin from pg_roles where rolname='voicequote_platform_admin'")" f
     sql vqv_single "CREATE ROLE $role LOGIN PASSWORD '$rolepw' IN ROLE voicequote_platform_admin" >/dev/null

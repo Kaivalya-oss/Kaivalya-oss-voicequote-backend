@@ -163,6 +163,33 @@ class TenantMembership(ControlPlaneBase, TimestampMixin):
     user: Mapped[PlatformUser] = relationship(foreign_keys=[user_id], lazy="joined")
 
 
+class SessionRevokedReason(str, Enum):
+    SIGNED_OUT = "SIGNED_OUT"
+    REFRESH_REUSED = "REFRESH_REUSED"
+
+
+class ShowroomSession(ControlPlaneBase):
+    """One sign-in. Its tokens carry its ID, and stop working the moment it is revoked."""
+
+    __tablename__ = "showroom_sessions"
+    __table_args__ = (
+        CheckConstraint(
+            f"revoked_reason IS NULL OR revoked_reason IN ({_values(SessionRevokedReason)})",
+            name="ck_showroom_sessions_revoked_reason",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    # SHA-256 of the ID of the only refresh token that may be used next. Each refresh replaces it.
+    refresh_token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    last_refreshed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_reason: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+
+
 class TenantConnection(ControlPlaneBase, TimestampMixin):
     """A reference to the showroom's database. Credentials live only in the secrets store."""
 

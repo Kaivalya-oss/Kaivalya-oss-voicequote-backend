@@ -15,6 +15,8 @@ from app.control_plane.models import (
     MembershipStatus,
     OnboardingStage,
     PlatformUser,
+    SessionRevokedReason,
+    ShowroomSession,
     Tenant,
     TenantMembership,
     TenantRole,
@@ -40,7 +42,7 @@ from app.core.exceptions import (
 )
 from app.core.dev_accounts import is_refused_dev_credential
 from app.core.security import create_access_token, create_refresh_token, decode_token, hash_password, verify_password
-from app.core.tenant_context import PLATFORM_SCOPE, TenantContext, account_has_access
+from app.core.tenant_context import PLATFORM_SCOPE, TenantContext, account_has_access, active_session
 from app.database.provisioning import latest_schema_version
 from app.platform_admin.models import AuditEvent
 
@@ -78,13 +80,19 @@ def member_response(m: TenantMembership) -> MemberResponse:
     )
 
 
-def issue_tokens(user: PlatformUser, membership: Optional[TenantMembership]) -> TokenPairResponse:
-    claims = {"scope": PLATFORM_SCOPE}
+def issue_tokens(user: PlatformUser, membership: Optional[TenantMembership], sign_in: ShowroomSession) -> TokenPairResponse:
+    """A new token pair for this sign-in. Only the newest refresh token works afterwards."""
+    claims = {"scope": PLATFORM_SCOPE, "sid": str(sign_in.id)}
     if membership is not None:
         claims["tid"] = str(membership.tenant_id)
+    refresh_id = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc)
+    sign_in.refresh_token_hash = _hash_token(refresh_id)
+    sign_in.last_refreshed_at = now
+    sign_in.expires_at = now + timedelta(days=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS)
     return TokenPairResponse(
         access_token=create_access_token(user.id, extra_claims=claims),
-        refresh_token=create_refresh_token(user.id, extra_claims=claims),
+        refresh_token=create_refresh_token(user.id, extra_claims={**claims, "jti": refresh_id}),
         expires_in=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         user=PlatformUserResponse.model_validate(user),
         active_tenant=_summary(membership) if membership is not None else None,
@@ -116,6 +124,16 @@ class ControlPlaneService:
 
     # ---------- sessions ----------
 
+    def _new_sign_in(self, user: PlatformUser) -> ShowroomSession:
+        sign_in = ShowroomSession(id=uuid.uuid4(), user_id=user.id, refresh_token_hash="")
+        self.session.add(sign_in)
+        return sign_in
+
+    async def _issue(self, user: PlatformUser, membership: Optional[TenantMembership], sign_in: ShowroomSession) -> TokenPairResponse:
+        tokens = issue_tokens(user, membership, sign_in)
+        await self.session.commit()
+        return tokens
+
     async def login(self, email: str, password: str) -> TokenPairResponse:
         user = (
             await self.session.execute(select(PlatformUser).where(PlatformUser.email == email.lower()))
@@ -130,7 +148,7 @@ class ControlPlaneService:
             raise UnauthorizedException("Invalid email or password.")
         memberships = await self.active_memberships(user.id)
         # One showroom: select it. Several: the user must choose.
-        return issue_tokens(user, memberships[0] if len(memberships) == 1 else None)
+        return await self._issue(user, memberships[0] if len(memberships) == 1 else None, self._new_sign_in(user))
 
     async def refresh(self, refresh_token: str) -> TokenPairResponse:
         payload = decode_token(refresh_token)
@@ -138,8 +156,21 @@ class ControlPlaneService:
             raise UnauthorizedException("Invalid token.")
         try:
             user_id = uuid.UUID(str(payload.get("sub")))
+            session_id = uuid.UUID(str(payload.get("sid")))
         except ValueError:
             raise UnauthorizedException("Invalid token.")
+        sign_in = (
+            await self.session.execute(
+                select(ShowroomSession).where(ShowroomSession.id == session_id).with_for_update().execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        ended = UnauthorizedException("This session has ended. Sign in again.")
+        if sign_in is None or sign_in.user_id != user_id or sign_in.revoked_at is not None or sign_in.expires_at <= datetime.now(timezone.utc):
+            raise ended
+        if not secrets.compare_digest(sign_in.refresh_token_hash, _hash_token(str(payload.get("jti", "")))):
+            # An older refresh token from this sign-in: someone else may hold a copy, so end it for both.
+            await self._revoke(sign_in, SessionRevokedReason.REFRESH_REUSED, "SESSION_REFRESH_REUSED")
+            raise ended
         user = await self.session.get(PlatformUser, user_id)
         if not user or user.account_status != AccountStatus.ACTIVE.value or not await account_has_access(self.session, user.id):
             raise UnauthorizedException("Account is not active.")
@@ -147,14 +178,28 @@ class ControlPlaneService:
         if payload.get("tid"):
             # A revoked membership is dropped here rather than carried into the new token.
             membership = await self._active_membership(user.id, uuid.UUID(str(payload["tid"])))
-        return issue_tokens(user, membership)
+        return await self._issue(user, membership, sign_in)
 
-    async def select_tenant(self, user: PlatformUser, tenant_id: uuid.UUID) -> TokenPairResponse:
+    async def logout(self, payload: dict) -> None:
+        """Ends the sign-in the access token belongs to, including its refresh token."""
+        sign_in = await active_session(self.session, payload, uuid.UUID(str(payload.get("sub"))))
+        await self._revoke(sign_in, SessionRevokedReason.SIGNED_OUT, "SIGNED_OUT")
+
+    async def _revoke(self, sign_in: ShowroomSession, reason: SessionRevokedReason, action: str) -> None:
+        sign_in.revoked_at = datetime.now(timezone.utc)
+        sign_in.revoked_reason = reason.value
+        self.session.add(
+            AuditEvent(actor_type="SHOWROOM_ACCOUNT", actor_id=sign_in.user_id, action=action, target_type="SESSION", target_id=str(sign_in.id))
+        )
+        await self.session.commit()
+
+    async def select_tenant(self, user: PlatformUser, tenant_id: uuid.UUID, payload: dict) -> TokenPairResponse:
         membership = await self._active_membership(user.id, tenant_id)
         if membership is None:
             # The same answer whether the showroom exists or not.
             raise ForbiddenException("You do not have access to this showroom.")
-        return issue_tokens(user, membership)
+        # Switching showroom stays within the same sign-in, so signing out still ends it.
+        return await self._issue(user, membership, await active_session(self.session, payload, user.id))
 
     # ---------- team ----------
 
@@ -252,8 +297,7 @@ class ControlPlaneService:
                 target_id=str(membership.id), tenant_id=membership.tenant_id, after={"role": membership.role},
             )
         )
-        await self.session.commit()
-        return issue_tokens(user, membership)
+        return await self._issue(user, membership, self._new_sign_in(user))
 
     async def _member(self, tenant_id: uuid.UUID, membership_id: uuid.UUID) -> TenantMembership:
         membership = (

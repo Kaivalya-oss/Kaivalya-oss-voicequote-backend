@@ -3,6 +3,7 @@ import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 
+import jwt
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select, update
@@ -105,7 +106,8 @@ async def test_token_naming_another_showroom_without_membership_is_rejected(clie
     a = await register(client)
     b = await register(client)
     # A correctly signed token cannot bypass the membership check made on each request.
-    forged = create_access_token(a["user"]["id"], extra_claims={"scope": "platform", "tid": b["active_tenant"]["tenant_id"]})
+    sid = jwt.decode(a["access_token"], options={"verify_signature": False})["sid"]
+    forged = create_access_token(a["user"]["id"], extra_claims={"scope": "platform", "sid": sid, "tid": b["active_tenant"]["tenant_id"]})
     assert (await client.get(f"{P}/tenants/current", headers=H(forged))).status_code == 403
 
 
@@ -255,7 +257,7 @@ async def test_central_schema_holds_no_showroom_business_data():
         "tenants", "users", "tenant_memberships", "tenant_connections",
         "subscriptions", "subscription_events", "tenant_migration_runs",
         "platform_admins", "platform_admin_sessions", "platform_admin_recovery_codes",
-        "platform_admin_throttle", "audit_events",
+        "platform_admin_throttle", "audit_events", "showroom_sessions",
     }
     forbidden = {"customers", "quotations", "quotation_items", "leads", "followups", "test_rides",
                  "inventory_units", "vehicle_variants", "vehicle_models", "vehicle_brands", "offers", "accessories"}

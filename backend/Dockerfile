@@ -52,7 +52,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
 
 # Only starts the server. Migrations are an explicit deployment step (docs/DEPLOYMENT_VERIFICATION.md),
 # and the server refuses to start on a database that does not match this release.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-proxy-headers"]
 
 
 # Tests and development seeding. Build with --target dev; never deployed.
