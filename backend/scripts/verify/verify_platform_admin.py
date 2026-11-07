@@ -107,7 +107,7 @@ for label, token in (("access", sdata["access_token"]), ("refresh", sdata["refre
     check(f"showroom {label} token refused by admin API", c.get(f"{A}/me", headers=H(token)).status_code == 401)
 for path in ("/api/v1/platform/me", "/api/v1/platform/memberships", "/api/v1/platform/tenants/current", "/api/v1/customers", "/api/v1/quotations", "/api/v1/leads", "/api/v1/dashboard/summary"):
     check(f"admin token refused by showroom API: {path}", c.get(f"{SHOWROOM}{path}", headers=H(access)).status_code == 401)
-check("admin token can't create a showroom through the showroom API", c.post(f"{SHOWROOM}/api/v1/platform/showrooms", headers=H(access), json={"showroom_name": "Nope"}).status_code == 401)
+check("the showroom API has no route to create a showroom, even with an admin token", c.post(f"{SHOWROOM}/api/v1/platform/showrooms", headers=H(access), json={"showroom_name": "Nope"}).status_code == 404)
 check("showroom API serves no admin routes", c.post(f"{SHOWROOM}/api/v1/admin/auth/login", json={"email": EMAIL, "password": PASSWORD}).status_code == 404)
 
 # Forged tokens, each using what a showroom process could sign: its key is passed in only here.
